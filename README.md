@@ -157,5 +157,5 @@ The tests start a real host on a random port in a temporary directory, with pi's
 ## Roadmap
 
 1. **Host for client-created sessions**: this release.
-2. **Live TUI sessions**: a pi extension, loaded into every interactive `pi` process, registers its session with this host over a local socket and starts the host if needed. VS Code and the terminal then share the same conversation in real time, with `/ahp` commands to control it.
+2. **Live TUI sessions** ([plan](specs/live-tui-sessions.md)): a pi extension, loaded into every interactive `pi` process, registers its session with this host over a local socket and starts the host if needed. VS Code and the terminal then share the same conversation in real time, with `/ahp` commands to control it.
 3. **Polish**: optional tool approvals (`--approve-tools`), richer edit rendering (file diffs), `fetchTurns` paging and Dev Tunnels.

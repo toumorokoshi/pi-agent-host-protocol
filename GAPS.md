@@ -46,7 +46,7 @@ Known issues and features not yet implemented.
 
 ## Live TUI sessions (milestone 2)
 
-Not started. A bridge extension in each interactive `pi` process would register its live session with the host over a local socket. `PI_AGENT_HOST_DAEMON=1` is already set in the host process, so that extension can stay inactive there.
+Not started; the plan is in [specs/live-tui-sessions.md](specs/live-tui-sessions.md). A bridge extension in each interactive `pi` process registers its live session with the host over a unix socket, using pi's RPC command and event protocol. `PI_AGENT_HOST_DAEMON=1` is already set in the host process (and inherited by its `pi --mode rpc` children), so the extension stays inactive there.
 
 ## Logging
 
