@@ -21,9 +21,9 @@ export class HostAlreadyRunningError extends Error {}
  */
 export class BridgeServer {
 	readonly path: string;
-	/** The AHP URL sent to bridges, so they can show it to the user. */
-	url: string | undefined;
 	readonly #server: Server;
+	/** The AHP URL sent to bridges so they can show it; known once the WebSocket listener is up. */
+	readonly #url = Promise.withResolvers<string | undefined>();
 	readonly #handler: LiveSessionHandler;
 	readonly #logger: Logger;
 	readonly #sockets = new Set<Socket>();
@@ -56,7 +56,13 @@ export class BridgeServer {
 		return bridge;
 	}
 
+	/** Sets the URL bridges show to the user. Attaches wait for it (briefly), since the socket opens first. */
+	setUrl(url: string | undefined): void {
+		this.#url.resolve(url);
+	}
+
 	async close(): Promise<void> {
+		this.#url.resolve(undefined);
 		for (const socket of this.#sockets) socket.destroy();
 		await new Promise<void>((resolve) => this.#server.close(() => resolve()));
 	}
@@ -88,7 +94,7 @@ export class BridgeServer {
 			link?.end(error);
 			link = undefined;
 		});
-		channel.onRecord((record) => {
+		channel.onRecord(async (record) => {
 			switch (record.type) {
 				case "attach": {
 					const info = record as unknown as AttachRequest;
@@ -100,10 +106,11 @@ export class BridgeServer {
 					}
 					link?.end(new Error("pi switched to another session"));
 					link = new SessionLink(channel, info.sessionId, info.pid);
-					const result: AttachResult = { url: this.url };
-					channel.respond(record, { data: result });
-					this.#logger.info("live session attached", { ...logFields(), cwd: info.cwd });
 					const attached = link;
+					const result: AttachResult = { url: await Promise.race([this.#url.promise, delay(URL_WAIT_MS)]) };
+					channel.respond(record, { data: result });
+					if (attached.closed) return;
+					this.#logger.info("live session attached", { ...logFields(), cwd: info.cwd });
 					void this.#handler.attachLive(info, attached).catch((error) => {
 						this.#logger.warn("could not attach live session", {
 							...logFields(),
@@ -193,6 +200,12 @@ export class SessionLink implements RpcChannel {
 		for (const listener of [...this.#closeListeners]) listener(error);
 		this.#closeListeners.clear();
 	}
+}
+
+const URL_WAIT_MS = 5_000;
+
+function delay(ms: number): Promise<undefined> {
+	return new Promise((resolve) => setTimeout(() => resolve(undefined), ms).unref());
 }
 
 function listenOn(server: Server, path: string): Promise<void> {

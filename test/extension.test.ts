@@ -167,7 +167,7 @@ describe("bridge extension", () => {
 				starts++;
 				void BridgeServer.listen(socketPath, { attachLive: async () => {} }, silentLogger).then((started) => {
 					server = started;
-					server.url = "ws://127.0.0.1:1234?tkn=abc";
+					server.setUrl("ws://127.0.0.1:1234?tkn=abc");
 				});
 			},
 		});

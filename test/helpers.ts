@@ -33,6 +33,8 @@ export interface TestHost {
 	readonly dir: string;
 	readonly cwd: string;
 	readonly mode: PiMode;
+	/** In rpc mode, the URL the faux provider extension fetches responses from. */
+	readonly fauxUrl: string | undefined;
 	/** The bridge socket, when started with `bridge: true`. */
 	readonly socketPath: string | undefined;
 	readonly faux: FauxScript;
@@ -52,13 +54,14 @@ export interface FauxScript {
 export const PI_MODES: readonly PiMode[] = ["rpc", "embedded"];
 
 /** pi's own CLI from node_modules, so RPC tests do not depend on an installed `pi`. */
-const PI_CLI = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
-const FAUX_EXTENSION = fileURLToPath(new URL("./fixtures/faux-provider.ts", import.meta.url));
+export const PI_CLI = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
+export const FAUX_EXTENSION = fileURLToPath(new URL("./fixtures/faux-provider.ts", import.meta.url));
 const FAUX_MODELS = [{ id: "faux-1", name: "Faux One" }];
 
 interface StartedBackend {
 	backend: PiBackend;
 	faux: FauxScript;
+	fauxUrl?: string;
 	close(): Promise<void>;
 }
 
@@ -82,7 +85,7 @@ export async function startHost(
 	const bridge = options.bridge
 		? await BridgeServer.listen(join(dir, "host.sock"), host, options.logger ?? silentLogger)
 		: undefined;
-	if (bridge) bridge.url = listener.url;
+	bridge?.setUrl(listener.url);
 	const stop = async () => {
 		await bridge?.close();
 		await listener.close();
@@ -95,6 +98,7 @@ export async function startHost(
 		cwd,
 		mode,
 		socketPath: bridge?.path,
+		fauxUrl: started.fauxUrl,
 		faux: started.faux,
 		host,
 		stop,
@@ -166,6 +170,7 @@ async function startRpcBackend(dir: string, cwd: string, logger: Logger | undefi
 	});
 	return {
 		backend,
+		fauxUrl: `http://127.0.0.1:${port}/`,
 		faux: {
 			setResponses: (responses) => {
 				steps = [...responses];

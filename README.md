@@ -2,7 +2,7 @@
 
 An [Agent Host Protocol](https://github.com/microsoft/agent-host-protocol) (AHP) server for the [pi coding agent](https://github.com/earendil-works/pi). It lets the VS Code Agents window, and other AHP clients, create, list, resume and drive pi sessions over WebSocket.
 
-> **Status: milestone 1 of 3.** Sessions created by AHP clients run in `pi --mode rpc` processes started by the host (or in-process with `--pi-mode embedded`). Live pi TUI sessions are not exposed yet; that is milestone 2 (see [Roadmap](#roadmap)).
+> **Status: milestone 2 of 3.** Sessions created by AHP clients run in `pi --mode rpc` processes started by the host (or in-process with `--pi-mode embedded`). pi sessions open in terminals are shared live through a pi extension (see [Sharing pi terminal sessions](#sharing-pi-terminal-sessions)).
 
 ## Usage
 
@@ -29,6 +29,7 @@ pi-agent-host listening on ws://127.0.0.1:63877?tkn=…
 | `--debug` | off | Shorthand for `--log-level debug`: logs every session interaction |
 | `--pi-mode <mode>` | from settings, else `rpc` (or `$PI_AGENT_HOST_PI_MODE`) | `rpc` runs each session in its own `pi --mode rpc` process; `embedded` runs pi's SDK inside the host |
 | `--pi <path>` | from settings, else `pi` on `PATH` | The `pi` executable used in `rpc` mode |
+| `--no-bridge` | off | Don't accept sessions from interactive `pi` processes |
 
 Logs go to stderr. At the default level they show client connections and handshakes; `--debug` adds every request, client action, turn and tool call. See [docs/logging.md](docs/logging.md).
 
@@ -61,6 +62,24 @@ Remote agent hosts only appear in the **Agents window**, not in a regular editor
 
 Your available pi models appear in the model picker as `provider/model`. Reasoning models also offer a thinking-level option.
 
+### Sharing pi terminal sessions
+
+This package is also a pi package. Its extension shares the session of every interactive `pi` with the host, so VS Code can follow it and drive it.
+
+```sh
+npm install && npm run build
+pi install /path/to/pi-ahp       # once published: pi install npm:pi-agent-host
+```
+
+Then start `pi` as usual:
+
+- If no host is running, the extension starts one in the background (output in `~/.pi/agent-host/host.log`). It shows the URL to add to VS Code **once**; the URL stays the same afterwards. `/ahp status` shows it again.
+- The session appears in the Agents window with its history. Prompts typed in the terminal stream into VS Code; prompts, steering and cancel from VS Code run in the terminal.
+- `/ahp off` stops sharing this session, and `/ahp on` shares it again.
+- When you quit `pi`, the session stays in VS Code and continues in a `pi` started by the host.
+
+See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
+
 ## What works
 
 - Handshake: negotiates protocol 0.9.x (what VS Code currently speaks) or 1.x, answers `ping` at any time, and supports `reconnect` with action replay.
@@ -70,6 +89,7 @@ Your available pi models appear in the model picker as `provider/model`. Reasoni
 - **Resumable errors:** when the model server fails mid-turn (for example llama.cpp's `Failed to parse input` on a malformed tool call), the turn ends with a resumable error. The client can then continue the same turn without sending a new message, and the failed reply is left out of the model's context, the same as pi's own auto-retry.
 - `listSessions` covers existing pi sessions on disk. Subscribing to one loads its history; new turns continue the same session file.
 - Session titles: the first prompt sets the title, and renaming from the client writes the name back to pi.
+- **Live terminal sessions:** interactive `pi` processes share their sessions through the bundled pi extension, in both directions. A session is written by only one pi at a time: when a terminal opens a session the host is running, the host hands it over.
 - Read-only `resourceRead`, `resourceList` and `resourceResolve` on host-local `file:` URIs, used for browsing to pick a working directory. Write operations are refused.
 - **Terminals:** `createTerminal` and `disposeTerminal` run your `$SHELL` in a real pty in the requested directory. Keystrokes, resizes, renames, `clear` and exit codes all work, and `RootState.terminals` lists every terminal.
 - **Resource watches:** `createResourceWatch` watches files and directories with `@parcel/watcher`, recursively or not, with include/exclude globs. A watch is released when its last subscriber unsubscribes. See [docs/terminals-and-watches.md](docs/terminals-and-watches.md).
@@ -128,7 +148,7 @@ Rejected actions are echoed only to the sending client, with a `rejectionReason`
 |---|---|
 | Root | `root/agentsChanged` (the pi agent and its available models), `root/activeSessionsChanged`, `root/terminalsChanged`; notifications `root/sessionAdded`, `root/sessionRemoved`, `root/sessionSummaryChanged` |
 | Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatUpdated` |
-| Chat | `chat/turnStarted` (queued messages), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/pendingMessageRemoved` |
+| Chat | `chat/turnStarted` (queued messages, and runs started in a pi terminal), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/pendingMessageRemoved` |
 | Terminal | `terminal/data`, `terminal/exited` |
 | Resource watch | `resourceWatch/changed` |
 
@@ -139,6 +159,7 @@ Not used: changesets, MCP, annotations, automations, canvases, input requests (e
 - **Protocol state** (`src/core/state-store.ts`) uses the official reducers from `@microsoft/agent-host-protocol`, so host state is exactly what clients rebuild. Every action gets a host-wide `serverSeq` and is kept in a replay buffer for `reconnect`.
 - **URIs** (`src/core/uris.ts`): VS Code addresses sessions as `<provider>:/<id>` and derives chat URIs as `ahp-chat://default/<base64url(sessionUri)>`. It does not use the URIs the host publishes. So this host publishes exactly those shapes, and also accepts the spec's `ahp-session:/` and `ahp-chat:/` forms. No per-connection URI rewriting is needed.
 - **Connections** (`src/host/connection.ts`) process messages in order, except `ping`. A subscription's snapshot is taken, registered and sent in the same tick, so no action can slip in between.
+- **Live sessions**: the pi extension in `src/extension/` connects to `src/host/bridges.ts` over a unix socket (`~/.pi/agent-host/host.sock`, which is also the single-instance lock). It speaks pi's own RPC command and event protocol (`src/pi/rpc-channel.ts`), so the host drives a terminal session with the same `RpcAgent` it uses for its own `pi --mode rpc` children. `PiSession` turns runs started outside the host into turns. See [specs/live-tui-sessions.md](specs/live-tui-sessions.md).
 - **pi binding**: `src/pi/pi-session.ts` maps one AHP session to one pi agent through the `PiAgent` / `PiBackend` shim in `src/pi/agent.ts`. Two backends implement it: `src/pi/rpc-backend.ts` (a `pi --mode rpc` child per session) and `src/pi/embedded-backend.ts` (pi's SDK in-process). `src/pi/turn-mapper.ts` turns pi's event stream into chat actions. `src/pi/history.ts` rebuilds turns from session files.
 
 ## Development
@@ -152,10 +173,10 @@ npm run build       # compile to dist/ (the published bin)
 
 Known gaps are tracked in [GAPS.md](GAPS.md), and design notes for individual features are in [specs/](specs/).
 
-The tests start a real host on a random port in a temporary directory, with pi's faux provider standing in for a model. Session tests run in both pi modes. In `rpc` mode the test host runs pi's CLI from `node_modules` and loads a test extension that fetches the faux responses from the test process. A minimal client then speaks VS Code's URI dialect over WebSocket and checks its state using the official reducers.
+The tests start a real host on a random port in a temporary directory, with pi's faux provider standing in for a model. Session tests run in both pi modes. In `rpc` mode the test host runs pi's CLI from `node_modules` and loads a test extension that fetches the faux responses from the test process. `test/tui.test.ts` runs a real interactive `pi` in a pseudo-terminal with the bridge extension loaded. A minimal client then speaks VS Code's URI dialect over WebSocket and checks its state using the official reducers.
 
 ## Roadmap
 
-1. **Host for client-created sessions**: this release.
-2. **Live TUI sessions** ([plan](specs/live-tui-sessions.md)): a pi extension, loaded into every interactive `pi` process, registers its session with this host over a local socket and starts the host if needed. VS Code and the terminal then share the same conversation in real time, with `/ahp` commands to control it.
+1. **Host for client-created sessions**: done.
+2. **Live TUI sessions** ([spec](specs/live-tui-sessions.md)): done. A pi extension, loaded into every interactive `pi` process, registers its session with this host over a local socket and starts the host if needed. VS Code and the terminal then share the same conversation in real time, with `/ahp` commands to control it.
 3. **Polish**: optional tool approvals (`--approve-tools`), richer edit rendering (file diffs), `fetchTurns` paging and Dev Tunnels.

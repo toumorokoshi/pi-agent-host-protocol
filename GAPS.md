@@ -46,7 +46,15 @@ Known issues and features not yet implemented.
 
 ## Live TUI sessions (milestone 2)
 
-Not started; the plan is in [specs/live-tui-sessions.md](specs/live-tui-sessions.md). A bridge extension in each interactive `pi` process registers its live session with the host over a unix socket, using pi's RPC command and event protocol. `PI_AGENT_HOST_DAEMON=1` is already set in the host process (and inherited by its `pi --mode rpc` children), so the extension stays inactive there.
+- **Not yet tried against a real VS Code window**, only against the test client and a real `pi` TUI in a pty.
+- **Not published:** `pi install npm:pi-agent-host` does not work until the package is published under a final name. Install from a built checkout.
+- **Mid-run attach:** when a TUI attaches while a run is streaming, the host picks up from that run's next user or assistant message. Earlier output of that run is missing until the session is reloaded.
+- **Steering typed in the terminal** during a run appears as a new turn, because each user message opens a turn.
+- **Two writers, briefly:** if a terminal opens a session while the host's own `pi` is mid-run, both can write to the file until that run ends.
+- **No auto-retry events** reach the host from a TUI (the extension API has none), so retries are not logged for live sessions.
+- **Extension dialogs** in the TUI still show in the terminal only; VS Code is not asked.
+- **Unix only:** the bridge uses a unix socket. Windows would need a named pipe.
+- **Host lifetime:** a host started by the extension runs until it is killed; it does not exit when the last terminal closes.
 
 ## Logging
 

@@ -95,6 +95,13 @@ async function main(): Promise<void> {
 		}
 	}
 
+	const listener = await listen(agentHost, { host, port, token });
+	if (created || settings.port === 0) {
+		await saveSettings({ ...settings, port: listener.port });
+	}
+
+	// Bridges waiting on attach get the URL now, before the slower model listing.
+	bridge?.setUrl(listener.url);
 	await agentHost.refreshAgents().catch((error) => {
 		if (error instanceof PiStartError) {
 			throw new Error(`${error.message}\nInstall pi, pass --pi <path>, or use --pi-mode embedded.`);
@@ -102,12 +109,6 @@ async function main(): Promise<void> {
 		logger.warn("could not load models", { error: error instanceof Error ? error.message : String(error) });
 	});
 
-	const listener = await listen(agentHost, { host, port, token });
-	if (created || settings.port === 0) {
-		await saveSettings({ ...settings, port: listener.port });
-	}
-
-	if (bridge) bridge.url = listener.url;
 	console.log(`pi-agent-host listening on ${listener.url}`);
 	if (token === undefined && host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
 		logger.warn("listening beyond localhost without a connection token");

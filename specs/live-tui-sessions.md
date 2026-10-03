@@ -1,6 +1,6 @@
-# Spec (plan): Live TUI sessions — milestone 2
+# Spec: Live TUI sessions — milestone 2
 
-Status: **planned**, not implemented.
+Status: **implemented** (see "Implementation notes" at the end for where it differs from the plan).
 
 ## Goal
 
@@ -135,3 +135,21 @@ A protocol version mismatch is rejected with a `response` error, and the bridge 
 - **Socket trust:** any local process of the same user can drive pi through the socket. That is the same trust level as pi itself. The socket is `0600` inside a `0700` directory.
 - **Windows** needs a named pipe instead of a unix socket. Out of scope.
 - **Out of scope (milestone 3):** tool approvals, forwarding extension dialogs, file diffs, `fetchTurns` paging.
+
+## Implementation notes
+
+- **Code:**
+  - `src/pi/rpc-channel.ts` (`JsonlChannel`), `src/pi/rpc-agent.ts`, `src/pi/wire.ts`;
+  - `src/bridge/protocol.ts`, `src/host/bridges.ts` (`BridgeServer`, `SessionLink`);
+  - `PiSession.live` / `adoptAgent` / `agentDetached` and turns started outside the host in `src/pi/pi-session.ts`;
+  - `src/extension/` (`index.ts`, `client.ts`, `commands.ts`, `autostart.ts`).
+- **Attach races:**
+  - The bridge counts itself as sharing from the moment it sends `attach`, because the host queries pi (`get_state`, `get_commands`, `get_branch`) before the bridge sees the response.
+  - The host opens the socket before its WebSocket listener, so an `attach` waits up to 5 s for the URL (`BridgeServer.setUrl`). The CLI now listens before it lists models.
+- **Resume through the bridge:** a `/ahp-resume` prompt from the host calls `resumeRun` directly, because extensions cannot invoke commands by name. Other prompts go through `sendUserMessage` with `expandPromptTemplates`, so templates and skills expand.
+- **No "live" marker** in the session list. AHP has no such flag, and a title suffix would be written back to pi on rename.
+- **Tests:**
+  - `test/external-turns.test.ts` (in-memory channel pair);
+  - `test/bridge.test.ts` (fake bridge over a real socket);
+  - `test/extension.test.ts` (command mapping, client against a real host, auto-start);
+  - `test/tui.test.ts` (a real interactive `pi` in a pty, with `HOME` and all pi directories isolated).

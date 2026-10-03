@@ -25,6 +25,7 @@ PI_AGENT_HOST_LOG_LEVEL=debug pi-agent-host
 **`info`** (default): connection lifecycle.
 
 - `pi backend`: at startup, the pi mode in use (`rpc` or `embedded`).
+- `live session attached` / `live session detached`: an interactive pi shared or let go of a session (`pid`, `session`, and for detaches the reason).
 - `client connected`: a WebSocket connection was accepted.
 - `client initialized` / `client reconnected`: the handshake finished. Includes the client's name (VS Code reports `vscode-agents-window` or `vscode-editor-window`), its `clientId` and the negotiated protocol version.
 - `client disconnected`
@@ -33,13 +34,14 @@ PI_AGENT_HOST_LOG_LEVEL=debug pi-agent-host
 
 - `connection rejected: missing or invalid token`: the URL's `?tkn=` didn't match the settings file.
 - `request failed`: a request returned an error. Includes the method, channel and error message.
-- `request before initialize`, `could not load models`, `could not save session title`
+- `request before initialize`, `could not load models`, `could not save session title`, `could not attach live session`
 
 **`debug`**: every interaction with a session.
 
 - `request` / `request done`: each JSON-RPC request, with its method, channel and duration in ms. `ping` is not logged, because VS Code sends one every 5 seconds.
 - `action accepted` / `action rejected` / `action ignored`: each action a client dispatches, such as `chat/turnStarted` or `chat/turnCancelled`. Rejections include the reason.
 - `session created`, `session loaded` (opened from a pi session file), `session ready`, `session disposed`
+- `turn started outside the host` (a run typed in a pi terminal), `live session ready`
 - `turn started` (model, prompt length, attachment count), `turn resumed` (a `chat/turnResume` after a resumable error), and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
 - `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `queued message started`
 - `terminal created` (shell, cwd, pid), `terminal exited` (exit code), `terminal disposed`
