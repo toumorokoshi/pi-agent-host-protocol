@@ -141,6 +141,10 @@ export class TestClient {
 		return clientSeq;
 	}
 
+	notifyUnsubscribe(channel: string): void {
+		this.#ws.send(JSON.stringify({ jsonrpc: "2.0", method: "unsubscribe", params: { channel } }));
+	}
+
 	/** Resolves with the first (past or future) message matching `predicate`. */
 	waitFor(predicate: (message: Inbound) => boolean, timeoutMs = 10_000): Promise<Inbound> {
 		const existing = this.messages.find(predicate);

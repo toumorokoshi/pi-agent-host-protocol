@@ -4,20 +4,37 @@ import {
 	type ChatAction,
 	type ChatState,
 	chatReducer,
+	type ResourceWatchAction,
+	type ResourceWatchState,
 	type RootAction,
 	type RootState,
+	resourceWatchReducer,
 	rootReducer,
 	type SessionAction,
 	type SessionState,
 	type Snapshot,
 	type StateAction,
 	sessionReducer,
+	type TerminalAction,
+	type TerminalState,
+	terminalReducer,
 } from "@microsoft/agent-host-protocol";
 import { chatUri, parseChannel, ROOT_CHANNEL, sessionUri } from "./uris.ts";
 
 const DEFAULT_REPLAY_CAPACITY = 10_000;
 
 export type EnvelopeListener = (envelope: ActionEnvelope) => void;
+
+/** Channels addressed by their exact URI rather than a session id. */
+export type ExactChannel =
+	| { kind: "terminal"; state: TerminalState }
+	| { kind: "resourceWatch"; state: ResourceWatchState };
+
+function reduceExact(channel: ExactChannel, action: StateAction): ExactChannel {
+	return channel.kind === "terminal"
+		? { kind: "terminal", state: terminalReducer(channel.state, action as TerminalAction) }
+		: { kind: "resourceWatch", state: resourceWatchReducer(channel.state, action as ResourceWatchAction) };
+}
 
 /**
  * Authoritative protocol state. Every mutation goes through the shared AHP
@@ -28,6 +45,7 @@ export class StateStore {
 	#root: RootState;
 	readonly #sessions = new Map<string, SessionState>();
 	readonly #chats = new Map<string, ChatState>();
+	readonly #exact = new Map<string, ExactChannel>();
 	readonly #listeners = new Set<EnvelopeListener>();
 	readonly #replay: ActionEnvelope[] = [];
 	readonly #replayCapacity: number;
@@ -69,9 +87,32 @@ export class StateStore {
 		this.#chats.delete(id);
 	}
 
+	/** Registers a terminal or resource-watch channel at `uri` without emitting actions. */
+	addChannel(uri: string, channel: ExactChannel): void {
+		this.#exact.set(uri, channel);
+	}
+
+	removeChannel(uri: string): void {
+		this.#exact.delete(uri);
+	}
+
+	channel(uri: string): ExactChannel | undefined {
+		return this.#exact.get(uri);
+	}
+
+	/**
+	 * Replaces a terminal's state outside the action stream. Used only to bound
+	 * retained scrollback; clients keep whatever they already reduced.
+	 */
+	replaceTerminalState(uri: string, state: TerminalState): void {
+		if (this.#exact.get(uri)?.kind === "terminal") this.#exact.set(uri, { kind: "terminal", state });
+	}
+
 	snapshot(channel: string): Snapshot | undefined {
-		const ref = parseChannel(channel);
 		const fromSeq = this.#seq;
+		const exact = this.#exact.get(channel);
+		if (exact) return { resource: channel, state: exact.state, fromSeq };
+		const ref = parseChannel(channel);
 		switch (ref.kind) {
 			case "root":
 				return { resource: ROOT_CHANNEL, state: this.#root, fromSeq };
@@ -98,6 +139,11 @@ export class StateStore {
 	 * envelope, or `undefined` if the channel does not exist.
 	 */
 	dispatch(channel: string, action: StateAction, origin?: ActionOrigin): ActionEnvelope | undefined {
+		const exact = this.#exact.get(channel);
+		if (exact) {
+			this.#exact.set(channel, reduceExact(exact, action));
+			return this.#emit(channel, action, origin);
+		}
 		const ref = parseChannel(channel);
 		let resource: string;
 		switch (ref.kind) {
@@ -122,7 +168,11 @@ export class StateStore {
 			default:
 				return undefined;
 		}
-		const envelope: ActionEnvelope = { channel: resource, action, serverSeq: ++this.#seq, origin };
+		return this.#emit(resource, action, origin);
+	}
+
+	#emit(channel: string, action: StateAction, origin: ActionOrigin | undefined): ActionEnvelope {
+		const envelope: ActionEnvelope = { channel, action, serverSeq: ++this.#seq, origin };
 		this.#remember(envelope);
 		for (const listener of this.#listeners) listener(envelope);
 		return envelope;

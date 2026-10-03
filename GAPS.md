@@ -16,8 +16,17 @@ Known issues and features not yet implemented.
 - **History gaps:** compaction summaries, custom messages and bash executions are not shown in reloaded history.
 - **pi extension dialogs** resolve with their defaults in host sessions.
 - **File edits** are shown as text results, not file diffs.
-- **Not implemented:** terminals, changesets, resource watches, MCP and automations.
+- **Not implemented:** changesets, MCP and automations.
 - **Read-only file access:** `resourceWrite` and the other write operations are refused.
+
+## Terminals and resource watches
+
+- **Terminal lifetime:** a terminal lives until a client calls `disposeTerminal` or the host stops. One whose client disconnects for good is never cleaned up.
+- **No command detection:** `terminal/commandExecuted` and `terminal/commandFinished` are never sent, because there is no shell integration.
+- **Terminal output after a restart:** output is not persisted, so terminals and their scrollback end when the host stops. Each terminal keeps only the last 256 KiB of scrollback for new subscribers.
+- **pi's `bash` tool** does not run in an AHP terminal, so tool calls have no live terminal view (`ToolResultTerminalContent`).
+- **Watch cost:** watches use `@parcel/watcher`. On Linux, a recursive watch of a large tree (such as a home directory) costs inotify watches. VS Code currently opens about 10 watches when it connects.
+- **Watch permissions:** `createResourceWatch` has no permission gate beyond requiring a host-local `file:` path, the same as `resourceRead`.
 
 ## Live TUI sessions (milestone 2)
 

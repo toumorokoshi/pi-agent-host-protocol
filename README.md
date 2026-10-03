@@ -57,6 +57,8 @@ Your available pi models appear in the model picker as `provider/model`. Reasoni
 - `listSessions` covers existing pi sessions on disk. Subscribing to one loads its history; new turns continue the same session file.
 - Session titles: the first prompt sets the title, and renaming from the client writes the name back to pi.
 - Read-only `resourceRead`, `resourceList` and `resourceResolve` on host-local `file:` URIs, used for browsing to pick a working directory. Write operations are refused.
+- **Terminals:** `createTerminal` and `disposeTerminal` run your `$SHELL` in a real pty in the requested directory. Keystrokes, resizes, renames, `clear` and exit codes all work, and `RootState.terminals` lists every terminal.
+- **Resource watches:** `createResourceWatch` watches files and directories with `@parcel/watcher`, recursively or not, with include/exclude globs. A watch is released when its last subscriber unsubscribes. See [docs/terminals-and-watches.md](docs/terminals-and-watches.md).
 
 ### Known limitations
 
@@ -65,7 +67,7 @@ Your available pi models appear in the model picker as `provider/model`. Reasoni
 - `disposeSession` only discards **empty** sessions. A session with history stays listed, and pi session files are never deleted. VS Code currently disposes sessions it is still showing, so treating dispose as delete would lose work.
 - pi extension dialogs (`ctx.ui.confirm` and similar) resolve with their defaults, because there is no UI on the host side.
 - History is always sent in full; there is no `fetchTurns` paging. Compaction summaries and custom messages are not shown.
-- Terminals, changesets, resource watches, MCP and automations are not implemented.
+- Changesets, MCP and automations are not implemented. Terminals have no shell-integration command detection.
 
 ## Design notes
 

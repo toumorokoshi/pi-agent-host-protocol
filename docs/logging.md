@@ -41,6 +41,8 @@ PI_AGENT_HOST_LOG_LEVEL=debug pi-agent-host
 - `session created`, `session loaded` (opened from a pi session file), `session ready`, `session disposed`
 - `turn started` (model, prompt length, attachment count) and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
 - `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `queued message started`
+- `terminal created` (shell, cwd, pid), `terminal exited` (exit code), `terminal disposed`
+- `resource watch created` (root, recursive) and `resource watch released`. Watcher failures are logged as `resource watch error` at warn.
 
 Each line carries `client=<address>` and `clientName=…`, or `session=<id>` and `turn=<id>`, so you can follow one client or one conversation with `grep`.
 

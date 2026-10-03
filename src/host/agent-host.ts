@@ -15,6 +15,7 @@ import {
 	type SessionSummary,
 	type Snapshot,
 	type StateAction,
+	type TerminalClaim,
 } from "@microsoft/agent-host-protocol";
 import { type Logger, silentLogger } from "../core/logger.ts";
 import { StateStore } from "../core/state-store.ts";
@@ -33,7 +34,9 @@ import type { PiServices } from "../pi/services.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
 import { Connection, type ConnectionHandler, type RESPONDED, type Reply } from "./connection.ts";
+import { ResourceWatchService } from "./resource-watches.ts";
 import { ResourceService } from "./resources.ts";
+import { TerminalService } from "./terminals.ts";
 
 export interface AgentHostOptions {
 	services: PiServices;
@@ -62,9 +65,6 @@ const UNSUPPORTED_METHODS = new Set([
 	"createChat",
 	"moveChat",
 	"disposeChat",
-	"createTerminal",
-	"disposeTerminal",
-	"createResourceWatch",
 	"invokeChangesetOperation",
 	"listAutomationTriggerDefinitions",
 	"runAutomation",
@@ -92,6 +92,8 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 	/** Negotiated protocol version per clientId, for `reconnect`. */
 	readonly #clientVersions = new Map<string, string>();
 	readonly #resources = new ResourceService();
+	readonly #terminals: TerminalService;
+	readonly #watches: ResourceWatchService;
 	#catalog: { at: number; sessions: Promise<SessionInfo[]> } | undefined;
 	#activeSessions = 0;
 
@@ -110,7 +112,10 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 				},
 			],
 			activeSessions: 0,
+			terminals: [],
 		});
+		this.#terminals = new TerminalService(this.store, this.logger, this.#defaultDirectory);
+		this.#watches = new ResourceWatchService(this.store, this.logger);
 		this.store.onEnvelope((envelope) => {
 			for (const connection of this.#connections) connection.deliver(envelope);
 		});
@@ -135,6 +140,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 		this.logger.info("client disconnected", connection.logFields);
 		connection.close();
 		this.#connections.delete(connection);
+		void this.#watches.release((channel) => this.#isSubscribed(channel), connection);
 	}
 
 	async dispose(): Promise<void> {
@@ -142,6 +148,12 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 		this.#connections.clear();
 		await Promise.all([...this.#sessions.values()].map((session) => session.dispose()));
 		this.#sessions.clear();
+		this.#terminals.disposeAll();
+		await this.#watches.disposeAll();
+	}
+
+	#isSubscribed(channel: string): boolean {
+		return [...this.#connections].some((connection) => connection.isSubscribed(channel));
 	}
 
 	// ── SessionHostContext ────────────────────────────────────────────────
@@ -194,6 +206,21 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 				return this.#resources.list(params.uri);
 			case "resourceResolve":
 				return this.#resources.resolve(params.uri);
+			case "createResourceWatch":
+				return this.#watches.create(
+					{
+						uri: params.uri,
+						recursive: params.recursive === true,
+						includes: globList(params.includes),
+						excludes: globList(params.excludes),
+					},
+					connection,
+				);
+			case "createTerminal":
+				return this.#createTerminal(params);
+			case "disposeTerminal":
+				this.#terminals.dispose(requireString(params.channel, "channel"));
+				return null;
 			default:
 				if (DENIED_RESOURCE_METHODS.has(method)) return this.#resources.denied(method);
 				if (UNSUPPORTED_METHODS.has(method)) {
@@ -208,6 +235,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 		if (!channel) return;
 		if (method === "unsubscribe") {
 			connection.unsubscribe(channel, this.store.resolve(channel));
+			await this.#watches.release((uri) => this.#isSubscribed(uri));
 		} else if (method === "dispatchAction") {
 			await this.#dispatchAction(connection, channel, params.clientSeq, params.action);
 		}
@@ -286,6 +314,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 		const snapshot = this.store.snapshot(channel);
 		if (!snapshot) throw ProtocolError.notFound(channel);
 		connection.subscribe(snapshot.resource, channel);
+		this.#watches.subscribed(snapshot.resource);
 		return reply({ snapshot: { ...snapshot, resource: channel } });
 	}
 
@@ -296,6 +325,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 			const snapshot = this.store.snapshot(channel);
 			if (!snapshot) continue;
 			connection.subscribe(snapshot.resource, channel);
+			this.#watches.subscribed(snapshot.resource);
 			snapshots.push({ ...snapshot, resource: channel });
 		}
 		return snapshots;
@@ -305,6 +335,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 
 	/** Ensures the session addressed by a session or chat URI is loaded. */
 	async #load(channel: string): Promise<void> {
+		if (this.store.channel(channel)) return;
 		const ref = parseChannel(channel);
 		if (ref.kind === "root") return;
 		if (ref.kind === "unknown") throw ProtocolError.notFound(channel);
@@ -347,6 +378,21 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 			if (this.store.session(id)?.lifecycle === "ready") {
 				this.#notifyRoot("root/sessionAdded", { summary: session.summary() });
 			}
+		});
+		return null;
+	}
+
+	async #createTerminal(params: Record<string, unknown>): Promise<null> {
+		const claim = params.claim;
+		if (typeof claim !== "object" || claim === null || typeof (claim as { kind?: unknown }).kind !== "string") {
+			throw ProtocolError.invalidParams("claim is required");
+		}
+		await this.#terminals.create(requireString(params.channel, "channel"), {
+			claim: claim as TerminalClaim,
+			name: typeof params.name === "string" ? params.name : undefined,
+			cwd: typeof params.cwd === "string" ? params.cwd : undefined,
+			cols: positiveInt(params.cols),
+			rows: positiveInt(params.rows),
 		});
 		return null;
 	}
@@ -425,6 +471,15 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 	/** Validates and applies a client-dispatched action, running its side effects. */
 	async #applyClientAction(channel: string, action: StateAction, origin: ActionOrigin): Promise<ActionOutcome> {
 		const unsupported: ActionOutcome = { kind: "rejected", reason: `Unsupported action: ${action.type}` };
+		const exact = this.store.channel(channel);
+		if (exact?.kind === "terminal") {
+			const reason = this.#terminals.validate(channel, action);
+			if (reason) return { kind: "rejected", reason };
+			this.store.dispatch(channel, action, origin);
+			this.#terminals.onAction(channel, action);
+			return { kind: "accepted" };
+		}
+		if (exact?.kind === "resourceWatch") return unsupported;
 		let ref = parseChannel(channel);
 		// VS Code addresses session renames to the chat; AHP defines them on the session.
 		if (ref.kind === "chat" && action.type === ActionType.SessionTitleChanged) {
@@ -487,6 +542,15 @@ function catalogSummary(info: SessionInfo): SessionSummary {
 function clientName(clientInfo: unknown): string | undefined {
 	const name = (clientInfo as { name?: unknown } | undefined)?.name;
 	return typeof name === "string" ? name : undefined;
+}
+
+function globList(value: unknown): { items: string[] } | undefined {
+	const items = (value as { items?: unknown } | undefined)?.items;
+	return Array.isArray(items) ? { items: items.filter((item): item is string => typeof item === "string") } : undefined;
+}
+
+function positiveInt(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function requireString(value: unknown, name: string): string {

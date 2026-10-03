@@ -19,7 +19,9 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-coding-agent": "^1.0.1",
+		"@lydell/node-pty": "^1.2.0-beta.15",
 		"@microsoft/agent-host-protocol": "^1.0.0",
+		"@parcel/watcher": "^2.6.0",
 		"ws": "^8.22.0"
 	},
 	"devDependencies": {
