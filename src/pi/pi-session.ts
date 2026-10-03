@@ -6,6 +6,7 @@ import {
 	type ChatSummary,
 	type Message,
 	MessageAttachmentKind,
+	MessageKind,
 	PendingMessageKind,
 	ResponsePartKind,
 	SessionLifecycle,
@@ -19,7 +20,7 @@ import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
 import { chatUri, fileUri, PROVIDER, pathFromFileUri, sessionUri } from "../core/uris.ts";
 import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
-import { turnsFromEntries } from "./history.ts";
+import { turnsFromEntries, userMessageText } from "./history.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import { TurnMapper, type TurnOutcome } from "./turn-mapper.ts";
 
@@ -44,6 +45,9 @@ interface ActiveTurn {
 /** What a run does: send a new user message, or continue a turn that ended in a resumable error. */
 type RunKind = { kind: "prompt"; message: Message } | { kind: "resume" };
 
+/** Text of a turn that pi started without a user message (for example, an extension continuing a run). */
+const CONTINUED = "Continued in pi";
+
 const TITLE_LENGTH = 80;
 const UNTITLED = "New session";
 
@@ -62,6 +66,16 @@ export class PiSession {
 	#agent: Promise<PiAgent> | undefined;
 	#turn: ActiveTurn | undefined;
 	#lastRun: Promise<void> = Promise.resolve();
+	/** True while a run the host started (prompt or resume) is in flight. */
+	#hostRun = false;
+	/**
+	 * The turn of a run started outside the host (typed in a pi TUI). Kept
+	 * until pi settles, even after a client cancels it, so the rest of that
+	 * run's events are not mistaken for a new run.
+	 */
+	#externalRun: ActiveTurn | undefined;
+	/** Agents whose events are observed for runs started outside the host. */
+	readonly #observed = new WeakSet<PiAgent>();
 	/** The turn whose last run ended in a resumable provider error, if any. */
 	#resumableTurn: string | undefined;
 	/** Runs started per turn, so a resumed run gets fresh response part ids. */
@@ -258,7 +272,8 @@ export class PiSession {
 	/** The running agent, starting one if there is none or the last one's pi process exited. */
 	#ensureAgent(): Promise<PiAgent> {
 		if (this.#disposed) return Promise.reject(new Error("Session disposed"));
-		const start = () => this.#ctx.backend.startAgent(this.cwd, this.#sessionManager);
+		const start = () =>
+			this.#ctx.backend.startAgent(this.cwd, this.#sessionManager).then((agent) => this.#observe(agent));
 		const previous = this.#agent;
 		const agent = previous ? previous.then((current) => (current.closed ? start() : current)) : start();
 		this.#agent = agent;
@@ -332,6 +347,7 @@ export class PiSession {
 					chars: run.kind === "prompt" ? run.message.text.length : undefined,
 					attachments: run.kind === "prompt" ? run.message.attachments?.length : undefined,
 				});
+				this.#hostRun = true;
 				if (run.kind === "prompt") await agent.prompt(promptInput(run.message));
 				else await agent.resume();
 				outcome = mapper.impliedOutcome();
@@ -341,11 +357,90 @@ export class PiSession {
 				? { kind: "cancelled" }
 				: { kind: "error", message: error instanceof Error ? error.message : String(error) };
 		} finally {
+			this.#hostRun = false;
 			unsubscribe?.();
 		}
 		this.#hasTurns = true;
 		if (!turn.cancelledByClient) mapper.finish(outcome, Date.now() - turn.startedAt);
 		if (!turn.cancelledByClient && outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;
+		this.#ctx.logger.debug("turn finished", {
+			session: this.id,
+			turn: turn.id,
+			outcome: turn.cancelledByClient ? "cancelled" : outcome.kind,
+			error: outcome.kind === "error" ? outcome.message : undefined,
+			ms: Date.now() - turn.startedAt,
+		});
+		if (this.#turn === turn) {
+			this.#turn = undefined;
+			this.#ctx.activityChanged();
+		}
+		this.#syncSummary();
+		this.#consumePending();
+	}
+
+	/** Watches an agent for runs started outside the host. Returns the agent. */
+	#observe(agent: PiAgent): PiAgent {
+		if (!this.#observed.has(agent)) {
+			this.#observed.add(agent);
+			agent.subscribe((event) => this.#onAgentEvent(event));
+		}
+		return agent;
+	}
+
+	/**
+	 * Turns runs the host did not start into turns: each user message opens a
+	 * turn (closing the previous one), an assistant message without one opens
+	 * a "continued" turn, and `agent_settled` closes it.
+	 */
+	#onAgentEvent(event: PiEvent): void {
+		if (this.#hostRun) return;
+		if (event.type === "agent_settled") {
+			const turn = this.#externalRun;
+			this.#externalRun = undefined;
+			if (turn) this.#finishExternalTurn(turn, turn.mapper.impliedOutcome());
+			return;
+		}
+		if (event.type === "message_start") {
+			const message = event.message as { role?: string; content?: Parameters<typeof userMessageText>[0] };
+			if (message.role === "user") {
+				const previous = this.#externalRun;
+				if (previous) this.#finishExternalTurn(previous, { kind: "complete" });
+				this.#startExternalTurn({ text: userMessageText(message.content), origin: { kind: MessageKind.User } });
+				return;
+			}
+			if (message.role === "assistant" && !this.#externalRun) {
+				this.#startExternalTurn({ text: CONTINUED, origin: { kind: MessageKind.SystemNotification } });
+			}
+		}
+		const turn = this.#externalRun;
+		if (turn) {
+			this.#logEvent(turn, event);
+			turn.mapper.handle(event);
+		}
+	}
+
+	#startExternalTurn(message: Message): void {
+		const turnId = crypto.randomUUID();
+		const mapper = new TurnMapper(turnId, (action) => {
+			if (!turn.cancelledByClient) this.#dispatchChat(action);
+		});
+		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
+		this.#externalRun = turn;
+		this.#resumableTurn = undefined;
+		this.#dispatchChat({ type: ActionType.ChatTurnStarted, turnId, startedAt: new Date().toISOString(), message });
+		this.#turn = turn;
+		this.#ctx.logger.debug("turn started outside the host", { session: this.id, turn: turnId });
+		this.#ctx.activityChanged();
+		this.#syncSummary();
+		if (message.origin.kind === MessageKind.User) this.#maybeSetTitle(message.text);
+	}
+
+	#finishExternalTurn(turn: ActiveTurn, outcome: TurnOutcome): void {
+		this.#hasTurns = true;
+		if (!turn.cancelledByClient) {
+			turn.mapper.finish(outcome, Date.now() - turn.startedAt);
+			if (outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;
+		}
 		this.#ctx.logger.debug("turn finished", {
 			session: this.id,
 			turn: turn.id,
