@@ -79,9 +79,9 @@ A protocol version mismatch is rejected with a `response` error, and the bridge 
   - then retry with backoff for up to about 5 s.
 
   The bin is resolved relative to the extension file, so a `pi install` alone is enough and no global npm install is needed. If the daemon goes away later, reconnect with backoff.
+- **Connection URL:** VS Code needs the `ws://…?tkn=` URL once. The port and token are persisted in `settings.json`, so the URL does not change. When the extension auto-starts the host, it shows the URL in the TUI once with `ctx.ui.notify`, and notes that it only needs adding to VS Code once.
 - **`/ahp` commands:**
-  - `status`: connected or not, session id, host URL;
-  - `url`: prints the `ws://…?tkn=` URL to paste into VS Code;
+  - `status`: connected or not, session id, and the host URL;
   - `off` / `on`: detach or re-attach this session;
   - `start`: start the host now.
 - **Origin of turns:** `input` events carry a `source`. A prompt the host sent arrives as `source: "extension"`, and one typed in the TUI as `"interactive"`. The bridge tags the next `agent_start` with this origin, so the host knows whether a turn is its own.
@@ -109,7 +109,7 @@ A protocol version mismatch is rejected with a `response` error, and the bridge 
 ### 5. Packaging
 
 - `package.json`: `"pi": { "extensions": ["./dist/extension/index.js"] }`. The bin stays.
-- README install: `pi install npm:pi-agent-host`, then `/ahp url` in any pi, then paste the URL into VS Code.
+- README install: `pi install npm:pi-agent-host`, then start `pi`. The first auto-start shows the URL to paste into VS Code; `/ahp status` shows it again later.
 
 ## Steps (each one a PR)
 
@@ -120,7 +120,7 @@ A protocol version mismatch is rejected with a `response` error, and the bridge 
    - daemon single-instance;
    - tested with a fake bridge over a real unix socket.
 4. **Bridge extension:**
-   - activation guards, reload rebinding, command execution, resume reuse, auto-start, `/ahp` commands;
+   - activation guards, reload rebinding, command execution, resume reuse, auto-start with the one-time URL notice, `/ahp` commands;
    - unit tests drive it with a fake `pi`/`ctx`.
 5. **End-to-end and docs:**
    - run a real interactive `pi` in a pty (`@lydell/node-pty`, already a dependency), with the faux fixture and the bridge extension;
