@@ -24,6 +24,7 @@ import { AgentHost } from "../src/host/agent-host.ts";
 import type { PiBackend, PiMode } from "../src/pi/agent.ts";
 import { EmbeddedBackend } from "../src/pi/embedded-backend.ts";
 import { RpcBackend } from "../src/pi/rpc-backend.ts";
+import { JsonlChannel } from "../src/pi/rpc-channel.ts";
 import { type Listener, listen } from "../src/transport/websocket.ts";
 
 export interface TestHost {
@@ -336,4 +337,17 @@ export function startTurn(client: TestClient, chat: string, text: string): strin
 		message: { text, origin: { kind: "user" } },
 	});
 	return turnId;
+}
+
+/** Two connected in-memory channels, standing in for a socket between the host and a bridge. */
+export function channelPair(): [JsonlChannel, JsonlChannel] {
+	let a: JsonlChannel;
+	let b: JsonlChannel;
+	const end = async () => {
+		a.end(new Error("Channel closed"));
+		b.end(new Error("Channel closed"));
+	};
+	a = new JsonlChannel({ write: (text) => queueMicrotask(() => b.push(text)), close: end }, { idPrefix: "a" });
+	b = new JsonlChannel({ write: (text) => queueMicrotask(() => a.push(text)), close: end }, { idPrefix: "b" });
+	return [a, b];
 }

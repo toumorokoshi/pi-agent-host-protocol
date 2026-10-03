@@ -5,9 +5,11 @@ import { parsePiMode } from "../src/pi/agent.ts";
 import { omitResumedErrors } from "../src/pi/extensions/ahp-resume.ts";
 import { parseModelSelection } from "../src/pi/models.ts";
 import { RpcBackend } from "../src/pi/rpc-backend.ts";
-import { PiStartError, spawnCommand, splitRecords } from "../src/pi/rpc-process.ts";
+import { JsonlChannel, splitRecords } from "../src/pi/rpc-channel.ts";
+import { PiStartError, spawnCommand } from "../src/pi/rpc-process.ts";
 import { startedToolCall } from "../src/pi/turn-mapper.ts";
-import { newSession, startHost, startTurn, TestClient } from "./helpers.ts";
+import { toWireEvent } from "../src/pi/wire.ts";
+import { channelPair, newSession, startHost, startTurn, TestClient } from "./helpers.ts";
 
 describe("rpc helpers", () => {
 	test("splits JSONL records on LF only", () => {
@@ -52,6 +54,52 @@ describe("rpc helpers", () => {
 		assert.deepEqual(omitResumedErrors([user, failed, marker, reply]), [user, reply]);
 		// An error that was not resumed stays in context.
 		assert.deepEqual(omitResumedErrors([user, failed, user]), [user, failed, user]);
+	});
+});
+
+describe("rpc channel", () => {
+	test("correlates requests and responses in both directions", async () => {
+		const [host, bridge] = channelPair();
+		bridge.onRecord((record) => {
+			if (record.type === "get_state") bridge.respond(record, { data: { isStreaming: false } });
+			if (record.type === "abort") bridge.respond(record, { error: "Nope" });
+		});
+		assert.deepEqual(await host.request({ type: "get_state" }), { isStreaming: false });
+		await assert.rejects(host.request({ type: "abort" }), /Nope/);
+		const events: string[] = [];
+		host.onRecord((record) => events.push(record.type));
+		bridge.send({ type: "agent_start" });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(events, ["agent_start"]);
+	});
+
+	test("fails pending requests and notifies listeners when the transport ends", async () => {
+		const channel = new JsonlChannel({ write: () => {}, close: async () => {} });
+		const pending = channel.request({ type: "get_state" });
+		const reasons: string[] = [];
+		channel.onClose((error) => reasons.push(error.message));
+		channel.end(new Error("gone"));
+		await assert.rejects(pending, /gone/);
+		assert.deepEqual(reasons, ["gone"]);
+		assert.equal(channel.closed, true);
+		await assert.rejects(channel.request({ type: "get_state" }), /gone/);
+	});
+});
+
+describe("wire events", () => {
+	test("drops partial snapshots and names started tool calls", () => {
+		const partial = { content: [{ type: "toolCall", id: "c1", name: "read" }] };
+		const wire = toWireEvent({
+			type: "message_update",
+			message: {} as never,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial } as never,
+		}) as any;
+		assert.deepEqual(wire, {
+			type: "message_update",
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, id: "c1", toolName: "read" },
+		});
+		const end = { type: "agent_settled" } as const;
+		assert.equal(toWireEvent(end as never), end);
 	});
 });
 
