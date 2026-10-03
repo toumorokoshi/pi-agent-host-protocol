@@ -70,6 +70,57 @@ Your available pi models appear in the model picker as `provider/model`. Reasoni
 - History is always sent in full; there is no `fetchTurns` paging. Compaction summaries and custom messages are not shown.
 - Changesets, MCP and automations are not implemented. Terminals have no shell-integration command detection.
 
+## Supported AHP operations
+
+Status is one of: supported; partial (works with the noted restriction); stub (answers with an empty result so clients don't fail); refused (returns an error); not supported (`MethodNotFound`).
+
+### Commands (client → host)
+
+| Command | Status | Notes |
+|---|---|---|
+| `initialize` | supported | Negotiates protocol 0.9.x or 1.x. Unsupported versions get `-32005` with `supportedVersions`. |
+| `ping` | supported | Answered at any time, including before `initialize`. |
+| `reconnect` | supported | Replays missed actions from a buffer, or sends fresh snapshots (for example after a host restart). |
+| `subscribe` / `unsubscribe` | supported | Root, session, chat, terminal and resource-watch channels. Subscribing to a saved pi session loads its history. |
+| `createSession` | supported | Accepts any local working directory. The session id becomes the pi session id. |
+| `disposeSession` | partial | Discards empty sessions only. Sessions with history stay listed, and pi session files are never deleted. |
+| `listSessions` | supported | Live sessions plus pi sessions on disk, newest first, paginated. |
+| `fetchTurns` | stub | History is always sent in full, so there are never older turns to page in. |
+| `resolveSessionConfig` / `sessionConfigCompletions` | stub | No session config options; models and thinking level are chosen per message instead. |
+| `completions` | stub | Returns no completions. |
+| `authenticate` | stub | Accepted; pi manages model credentials itself. |
+| `resourceRead` / `resourceList` / `resourceResolve` | supported | Host-local `file:` URIs only. |
+| `resourceWrite` / `resourceCopy` / `resourceDelete` / `resourceMove` / `resourceMkdir` / `resourceRequest` | refused | `PermissionDenied` (`-32009`). |
+| `createResourceWatch` | supported | `@parcel/watcher` with recursive, include and exclude options. Released when the last subscriber leaves. |
+| `createTerminal` / `disposeTerminal` | supported | Runs `$SHELL` in a pty. |
+| `createChat` / `moveChat` / `disposeChat` | not supported | One chat per session. |
+| `invokeChangesetOperation` | not supported | No changesets. |
+| `listAutomationTriggerDefinitions` / `runAutomation` / `fetchAutomationRuns` | not supported | No automations. |
+
+### Client actions (`dispatchAction`)
+
+| Channel | Accepted | Rejected |
+|---|---|---|
+| Chat | `chat/turnStarted`, `chat/turnCancelled`, `chat/turnResume` (after a resumable model-server error), `chat/pendingMessageSet` / `chat/pendingMessageRemoved` (steering and queued messages), `chat/queuedMessagesReordered`, `chat/draftChanged`, `chat/isReadChanged`, `chat/isArchivedChanged` | `chat/toolCallConfirmed` and `chat/toolCallResultConfirmed` (tools never wait for approval), `chat/truncated`, input requests, working-directory changes, client-executed tools |
+| Session | `session/titleChanged` (saved to pi; VS Code's form addressed to the chat is also accepted), `session/isReadChanged`, `session/isArchivedChanged`, `session/activeClientSet` / `session/activeClientRemoved`, `session/configChanged` | Working-directory, customization and MCP actions |
+| Terminal | `terminal/input`, `terminal/resized`, `terminal/claimed`, `terminal/titleChanged`, `terminal/cleared` | Host-only actions such as `terminal/data` |
+| Root | `root/configChanged` (no root config exists, so it has no effect) | Everything else |
+| Resource watch | None | Everything |
+
+Rejected actions are echoed only to the sending client, with a `rejectionReason`.
+
+### Sent by the host
+
+| Channel | Actions and notifications |
+|---|---|
+| Root | `root/agentsChanged` (the pi agent and its available models), `root/activeSessionsChanged`, `root/terminalsChanged`; notifications `root/sessionAdded`, `root/sessionRemoved`, `root/sessionSummaryChanged` |
+| Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatUpdated` |
+| Chat | `chat/turnStarted` (queued messages), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/pendingMessageRemoved` |
+| Terminal | `terminal/data`, `terminal/exited` |
+| Resource watch | `resourceWatch/changed` |
+
+Not used: changesets, MCP, annotations, automations, canvases, input requests (elicitation), tool confirmations, terminal command detection, and OTLP telemetry.
+
 ## Design notes
 
 - **Protocol state** (`src/core/state-store.ts`) uses the official reducers from `@microsoft/agent-host-protocol`, so host state is exactly what clients rebuild. Every action gets a host-wide `serverSeq` and is kept in a replay buffer for `reconnect`.
