@@ -8,7 +8,16 @@ import {
 } from "@microsoft/agent-host-protocol";
 import { firstText, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
 
-export type TurnOutcome = { kind: "complete" } | { kind: "cancelled" } | { kind: "error"; message: string };
+/**
+ * How a run ended. A `resumable` error came from the model provider (the run
+ * stopped on an assistant message with `stopReason: "error"`) and can be
+ * continued with `chat/turnResume`; other errors (e.g. an unknown model) are
+ * final.
+ */
+export type TurnOutcome =
+	| { kind: "complete" }
+	| { kind: "cancelled" }
+	| { kind: "error"; message: string; resumable?: boolean };
 
 interface AssistantLike {
 	role: "assistant";
@@ -43,7 +52,14 @@ export class TurnMapper {
 	#lastError: string | undefined;
 	#aborted = false;
 
-	constructor(turnId: string, emit: (action: ChatAction) => void) {
+	readonly #attempt: number;
+
+	/**
+	 * @param attempt Distinguishes the runs of one turn (0 for the first, then
+	 *   one per `chat/turnResume`) so their response part ids never collide.
+	 */
+	constructor(turnId: string, emit: (action: ChatAction) => void, attempt = 0) {
+		this.#attempt = attempt;
 		this.turnId = turnId;
 		this.#emit = emit;
 	}
@@ -126,7 +142,11 @@ export class TurnMapper {
 					type: ActionType.ChatError,
 					turnId: this.turnId,
 					duration,
-					part: { kind: ResponsePartKind.Error, error: { errorType: "agentError", message: outcome.message } },
+					part: {
+						kind: ResponsePartKind.Error,
+						error: { errorType: "agentError", message: outcome.message },
+						...(outcome.resumable ? { resumable: true } : {}),
+					},
 				});
 				break;
 		}
@@ -135,12 +155,13 @@ export class TurnMapper {
 	/** The outcome implied by the events seen so far, for a run that returned normally. */
 	impliedOutcome(): TurnOutcome {
 		if (this.#aborted) return { kind: "cancelled" };
-		if (this.#lastError !== undefined) return { kind: "error", message: this.#lastError };
+		if (this.#lastError !== undefined) return { kind: "error", message: this.#lastError, resumable: true };
 		return { kind: "complete" };
 	}
 
 	#partId(contentIndex: number): string {
-		return `${this.turnId}.${this.#messageIndex}.${contentIndex}`;
+		const attempt = this.#attempt === 0 ? "" : `r${this.#attempt}.`;
+		return `${this.turnId}.${attempt}${this.#messageIndex}.${contentIndex}`;
 	}
 
 	#ensurePart(kind: ResponsePartKind.Markdown | ResponsePartKind.Reasoning, id: string, content = ""): boolean {

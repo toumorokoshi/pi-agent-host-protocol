@@ -19,6 +19,12 @@ Known issues and features not yet implemented.
 - **Not implemented:** changesets, MCP and automations.
 - **Read-only file access:** `resourceWrite` and the other write operations are refused.
 
+## Resuming errored turns
+
+- **pi's run loop is bypassed:** a resumed run calls `agent.continue()` directly because pi has no public continue API. pi's auto-retry, automatic compaction, `agent_settled` and `agent_before_settle` hooks therefore don't run for the continuation. Asking pi for a public `AgentSession.continue()` would remove this.
+- **Lost on restart:** resumability is kept in memory only. After a host restart, a turn reloaded from history that ended in an error cannot be resumed; send a new message instead.
+- **Usage:** the resumed run's token usage replaces the turn's usage rather than adding to it.
+
 ## Terminals and resource watches
 
 - **Terminal lifetime:** a terminal lives until a client calls `disposeTerminal` or the host stops. One whose client disconnects for good is never cleaned up.

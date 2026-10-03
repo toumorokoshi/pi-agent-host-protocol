@@ -1,4 +1,4 @@
-import type { AgentSession, AgentSessionEvent, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	ActionType,
 	type ChatAction,
@@ -7,11 +7,13 @@ import {
 	type Message,
 	MessageAttachmentKind,
 	PendingMessageKind,
+	ResponsePartKind,
 	SessionLifecycle,
 	type SessionState,
 	SessionStatus,
 	type SessionSummary,
 	type StateAction,
+	TurnState,
 } from "@microsoft/agent-host-protocol";
 import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
@@ -39,6 +41,9 @@ interface ActiveTurn {
 	cancelledByClient: boolean;
 }
 
+/** What a run does: send a new user message, or continue a turn that ended in a resumable error. */
+type RunKind = { kind: "prompt"; message: Message } | { kind: "resume" };
+
 interface ImageInput {
 	type: "image";
 	data: string;
@@ -63,6 +68,10 @@ export class PiSession {
 	#agent: Promise<AgentSession> | undefined;
 	#turn: ActiveTurn | undefined;
 	#lastRun: Promise<void> = Promise.resolve();
+	/** The turn whose last run ended in a resumable provider error, if any. */
+	#resumableTurn: string | undefined;
+	/** Runs started per turn, so a resumed run gets fresh response part ids. */
+	readonly #attempts = new Map<string, number>();
 	#disposed = false;
 	#hasTurns: boolean;
 
@@ -182,8 +191,19 @@ export class PiSession {
 			case ActionType.ChatToolCallConfirmed:
 			case ActionType.ChatToolCallResultConfirmed:
 				return "Tool call is not awaiting confirmation";
-			case ActionType.ChatTurnResume:
-				return "Turn is not resumable";
+			case ActionType.ChatTurnResume: {
+				// Mirrors the reducer's own preconditions so a rejected resume has no side effects.
+				const last = chat.turns.at(-1);
+				const lastPart = last?.responseParts.at(-1);
+				if (chat.activeTurn) return "A turn is already in progress";
+				if (!last || last.id !== action.turnId || last.state !== TurnState.Error) {
+					return "Turn is not the latest errored turn";
+				}
+				if (lastPart?.kind !== ResponsePartKind.Error || !lastPart.resumable || this.#resumableTurn !== action.turnId) {
+					return "Turn is not resumable";
+				}
+				return undefined;
+			}
 			default:
 				return `Unsupported action: ${action.type}`;
 		}
@@ -193,7 +213,10 @@ export class PiSession {
 	onChatAction(action: ChatAction): void {
 		switch (action.type) {
 			case ActionType.ChatTurnStarted:
-				this.#runTurn(action.turnId, action.message);
+				this.#runTurn(action.turnId, { kind: "prompt", message: action.message });
+				break;
+			case ActionType.ChatTurnResume:
+				this.#runTurn(action.turnId, { kind: "resume" });
 				break;
 			case ActionType.ChatTurnCancelled:
 				if (this.#turn?.id === action.turnId) {
@@ -254,40 +277,51 @@ export class PiSession {
 	 * still be unwinding the aborted run, and pi rejects a new prompt while
 	 * streaming, so each run waits for the previous one to settle.
 	 */
-	#runTurn(turnId: string, message: Message): void {
-		const mapper = new TurnMapper(turnId, (action) => {
-			if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
-		});
+	#runTurn(turnId: string, run: RunKind): void {
+		const attempt = this.#attempts.get(turnId) ?? 0;
+		this.#attempts.set(turnId, attempt + 1);
+		this.#resumableTurn = undefined;
+		const mapper = new TurnMapper(
+			turnId,
+			(action) => {
+				if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
+			},
+			attempt,
+		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
 		this.#turn = turn;
 		this.#ctx.activityChanged();
 		this.#syncSummary();
-		this.#maybeSetTitle(message.text);
+		if (run.kind === "prompt") this.#maybeSetTitle(run.message.text);
 		const previous = this.#lastRun;
-		this.#lastRun = previous.then(() => this.#execute(turn, message));
+		this.#lastRun = previous.then(() => this.#execute(turn, run));
 	}
 
-	async #execute(turn: ActiveTurn, message: Message): Promise<void> {
+	async #execute(turn: ActiveTurn, run: RunKind): Promise<void> {
 		const { mapper } = turn;
 		let outcome: TurnOutcome = { kind: "cancelled" };
 		let unsubscribe: (() => void) | undefined;
 		try {
 			if (!turn.cancelledByClient) {
 				const agent = await this.#ensureAgent();
-				await this.#applyModel(agent, message);
+				if (run.kind === "prompt") await this.#applyModel(agent, run.message);
 				unsubscribe = agent.subscribe((event) => {
 					this.#logEvent(turn, event);
 					mapper.handle(event);
 				});
-				this.#ctx.logger.debug("turn started", {
+				this.#ctx.logger.debug(run.kind === "prompt" ? "turn started" : "turn resumed", {
 					session: this.id,
 					turn: turn.id,
 					model: agent.model ? `${agent.model.provider}/${agent.model.id}` : undefined,
-					chars: message.text.length,
-					attachments: message.attachments?.length,
+					chars: run.kind === "prompt" ? run.message.text.length : undefined,
+					attachments: run.kind === "prompt" ? run.message.attachments?.length : undefined,
 				});
-				const { text, images } = promptInput(message);
-				await agent.prompt(text, { images, source: "rpc" });
+				if (run.kind === "prompt") {
+					const { text, images } = promptInput(run.message);
+					await agent.prompt(text, { images, source: "rpc" });
+				} else {
+					await continueAfterError(agent);
+				}
 				outcome = mapper.impliedOutcome();
 			}
 		} catch (error) {
@@ -299,6 +333,7 @@ export class PiSession {
 		}
 		this.#hasTurns = true;
 		if (!turn.cancelledByClient) mapper.finish(outcome, Date.now() - turn.startedAt);
+		if (!turn.cancelledByClient && outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;
 		this.#ctx.logger.debug("turn finished", {
 			session: this.id,
 			turn: turn.id,
@@ -365,7 +400,7 @@ export class PiSession {
 				message: next.message,
 				queuedMessageId: next.id,
 			});
-			this.#runTurn(turnId, next.message);
+			this.#runTurn(turnId, { kind: "prompt", message: next.message });
 		}
 	}
 
@@ -414,6 +449,33 @@ export class PiSession {
 			defaultChat: chatUri(this.id),
 		};
 	}
+}
+
+/**
+ * Continues pi's run after a provider error without a new user message, the
+ * way pi's own auto-retry does: the failed assistant reply is omitted from the
+ * model context (a `context_edit` entry; the raw transcript keeps it), then the
+ * agent loop continues from the preceding user message or tool results.
+ */
+export async function continueAfterError(agent: AgentSession): Promise<void> {
+	const failed = lastErroredAssistantEntry(agent.sessionManager.getBranch());
+	if (failed) {
+		agent.sessionManager.appendContextEdit(failed, null);
+		agent.refreshContext();
+	}
+	await agent.agent.continue();
+}
+
+/** Id of the newest assistant entry if the branch ends in a provider error. */
+export function lastErroredAssistantEntry(entries: readonly SessionEntry[]): string | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i]!;
+		if (entry.type !== "message") continue;
+		const message = entry.message as { role?: string; stopReason?: string };
+		if (message.role !== "assistant") return undefined;
+		return message.stopReason === "error" ? entry.id : undefined;
+	}
+	return undefined;
 }
 
 /** Builds pi prompt input from an AHP message and its attachments. */

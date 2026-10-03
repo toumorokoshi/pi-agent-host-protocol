@@ -39,7 +39,7 @@ PI_AGENT_HOST_LOG_LEVEL=debug pi-agent-host
 - `request` / `request done`: each JSON-RPC request, with its method, channel and duration in ms. `ping` is not logged, because VS Code sends one every 5 seconds.
 - `action accepted` / `action rejected` / `action ignored`: each action a client dispatches, such as `chat/turnStarted` or `chat/turnCancelled`. Rejections include the reason.
 - `session created`, `session loaded` (opened from a pi session file), `session ready`, `session disposed`
-- `turn started` (model, prompt length, attachment count) and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
+- `turn started` (model, prompt length, attachment count), `turn resumed` (a `chat/turnResume` after a resumable error), and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
 - `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `queued message started`
 - `terminal created` (shell, cwd, pid), `terminal exited` (exit code), `terminal disposed`
 - `resource watch created` (root, recursive) and `resource watch released`. Watcher failures are logged as `resource watch error` at warn.

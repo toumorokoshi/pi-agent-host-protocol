@@ -54,6 +54,7 @@ Your available pi models appear in the model picker as `provider/model`. Reasoni
 - Creating sessions in any local working directory. Session ids are reused as pi session ids, so the files land in pi's normal session store and also appear in `pi --resume`.
 - Streaming turns: text, reasoning, tool calls and their results, token usage and errors.
 - Cancellation, steering messages, and queued messages that run once the current turn ends.
+- **Resumable errors:** when the model server fails mid-turn (for example llama.cpp's `Failed to parse input` on a malformed tool call), the turn ends with a resumable error. The client can then continue the same turn without sending a new message, and the failed reply is left out of the model's context, the same as pi's own auto-retry.
 - `listSessions` covers existing pi sessions on disk. Subscribing to one loads its history; new turns continue the same session file.
 - Session titles: the first prompt sets the title, and renaming from the client writes the name back to pi.
 - Read-only `resourceRead`, `resourceList` and `resourceResolve` on host-local `file:` URIs, used for browsing to pick a working directory. Write operations are refused.
