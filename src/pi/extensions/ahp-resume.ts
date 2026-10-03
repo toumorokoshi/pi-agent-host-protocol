@@ -1,5 +1,6 @@
 /**
- * pi extension loaded into every `pi --mode rpc` child (RPC backend only).
+ * pi extension loaded into every `pi --mode rpc` child (RPC backend), and
+ * registered by the TUI bridge extension for live sessions.
  *
  * pi's RPC protocol has no command that continues a run without a new user
  * message, so `chat/turnResume` sends the `/ahp-resume` command instead. It
@@ -8,9 +9,10 @@
  * model request. The session file keeps both, the same way the embedded
  * backend's `context_edit` keeps the raw transcript.
  *
- * Self-contained on purpose: the user's installed `pi` loads this file, so it
- * must not import host modules.
+ * Self-contained on purpose: `pi --mode rpc` children load this file on its
+ * own, so it has no runtime imports (type imports are erased).
  */
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const RESUME_COMMAND = "ahp-resume";
 export const RESUME_MARKER = "ahp-resume";
@@ -19,15 +21,6 @@ interface MessageLike {
 	role?: string;
 	customType?: string;
 	stopReason?: string;
-}
-
-interface ResumeExtensionApi {
-	registerCommand(name: string, options: { description?: string; handler: () => Promise<void> | void }): void;
-	sendMessage(
-		message: { customType: string; content: string; display: boolean },
-		options?: { triggerTurn?: boolean },
-	): void;
-	on(event: "context", handler: (event: { messages: MessageLike[] }) => { messages: MessageLike[] } | undefined): void;
 }
 
 function isMarker(message: MessageLike | undefined): boolean {
@@ -42,15 +35,18 @@ export function omitResumedErrors<T extends MessageLike>(messages: readonly T[])
 	});
 }
 
-export default function ahpResume(pi: ResumeExtensionApi): void {
+/** Starts a run that continues after the failed reply (the marker is filtered from context). */
+export function resumeRun(pi: Pick<ExtensionAPI, "sendMessage">): void {
+	pi.sendMessage({ customType: RESUME_MARKER, content: "", display: false }, { triggerTurn: true });
+}
+
+export default function ahpResume(pi: ExtensionAPI): void {
 	pi.registerCommand(RESUME_COMMAND, {
 		description: "Continue after a model-server error (used by pi-agent-host)",
-		handler: () => {
-			pi.sendMessage({ customType: RESUME_MARKER, content: "", display: false }, { triggerTurn: true });
-		},
+		handler: async () => resumeRun(pi),
 	});
 	pi.on("context", (event) => {
-		const messages = omitResumedErrors(event.messages);
+		const messages = omitResumedErrors(event.messages as MessageLike[]) as typeof event.messages;
 		return messages.length === event.messages.length ? undefined : { messages };
 	});
 }
