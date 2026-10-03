@@ -19,9 +19,19 @@ Known issues and features not yet implemented.
 - **Not implemented:** changesets, MCP and automations.
 - **Read-only file access:** `resourceWrite` and the other write operations are refused.
 
+## pi modes
+
+- **One process per session (rpc):** every open session keeps a `pi --mode rpc` child until it is disposed or the host stops. Idle children are never stopped early.
+- **Extension dialogs are not forwarded (rpc):** pi sends them over RPC, but the host dismisses them. They could be mapped to AHP input requests.
+- **Dialog dismissal is untested:** no test drives an extension that opens a dialog in an RPC child.
+- **Model list cache (rpc):** models are cached for 30 s, so a provider added in pi shows up after that.
+- **Session title of a running rpc session** is read from the session file only when the session is loaded. A rename made inside pi (for example by an extension) is not reflected until the host reloads the session.
+- **Version skew (rpc):** the host is tested against the pi bundled in `node_modules`. An installed `pi` with a different RPC protocol version is not detected.
+
 ## Resuming errored turns
 
-- **pi's run loop is bypassed:** a resumed run calls `agent.continue()` directly because pi has no public continue API. pi's auto-retry, automatic compaction, `agent_settled` and `agent_before_settle` hooks therefore don't run for the continuation. Asking pi for a public `AgentSession.continue()` would remove this.
+- **pi's run loop is bypassed (embedded mode):** a resumed run calls `agent.continue()` directly because pi has no public continue API. pi's auto-retry, automatic compaction, `agent_settled` and `agent_before_settle` hooks therefore don't run for the continuation. Asking pi for a public `AgentSession.continue()` would remove this.
+- **Hidden marker entries (rpc mode):** every resume adds an `ahp-resume` custom message to the session file. pi's TUI does not display it, and it is filtered from model context only while the resume extension is loaded. If you continue the session in a plain `pi` later, the failed reply is sent to the model again.
 - **Lost on restart:** resumability is kept in memory only. After a host restart, a turn reloaded from history that ended in an error cannot be resumed; send a new message instead.
 - **Usage:** the resumed run's token usage replaces the turn's usage rather than adding to it.
 

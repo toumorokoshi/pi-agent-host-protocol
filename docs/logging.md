@@ -24,6 +24,7 @@ PI_AGENT_HOST_LOG_LEVEL=debug pi-agent-host
 
 **`info`** (default): connection lifecycle.
 
+- `pi backend`: at startup, the pi mode in use (`rpc` or `embedded`).
 - `client connected`: a WebSocket connection was accepted.
 - `client initialized` / `client reconnected`: the handshake finished. Includes the client's name (VS Code reports `vscode-agents-window` or `vscode-editor-window`), its `clientId` and the negotiated protocol version.
 - `client disconnected`
@@ -32,7 +33,7 @@ PI_AGENT_HOST_LOG_LEVEL=debug pi-agent-host
 
 - `connection rejected: missing or invalid token`: the URL's `?tkn=` didn't match the settings file.
 - `request failed`: a request returned an error. Includes the method, channel and error message.
-- `request before initialize`, `could not load models`
+- `request before initialize`, `could not load models`, `could not save session title`
 
 **`debug`**: every interaction with a session.
 
@@ -43,6 +44,7 @@ PI_AGENT_HOST_LOG_LEVEL=debug pi-agent-host
 - `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `queued message started`
 - `terminal created` (shell, cwd, pid), `terminal exited` (exit code), `terminal disposed`
 - `resource watch created` (root, recursive) and `resource watch released`. Watcher failures are logged as `resource watch error` at warn.
+- In `rpc` mode: `pi stderr`, one line per line pi writes to stderr (tagged `session=<id>`, or `purpose=models` for the process that lists models), and `extension dialog dismissed` when a pi extension asks for input that the host cannot show.
 
 Each line carries `client=<address>` and `clientName=…`, or `session=<id>` and `turn=<id>`, so you can follow one client or one conversation with `grep`.
 

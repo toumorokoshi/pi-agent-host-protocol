@@ -1,4 +1,3 @@
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import {
 	ActionType,
 	type ChatAction,
@@ -6,6 +5,7 @@ import {
 	ToolCallConfirmationReason,
 	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
+import type { PiEvent } from "./agent.ts";
 import { firstText, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
 
 /**
@@ -30,6 +30,21 @@ interface AssistantLike {
 
 function asAssistant(message: unknown): AssistantLike | undefined {
 	return (message as { role?: string } | undefined)?.role === "assistant" ? (message as AssistantLike) : undefined;
+}
+
+/**
+ * The tool call a `toolcall_start` opens. The RPC wire form carries `id` and
+ * `toolName`; the SDK form carries the cumulative `partial` message instead.
+ */
+export function startedToolCall(event: {
+	contentIndex: number;
+	id?: string;
+	toolName?: string;
+	partial?: { content: ReadonlyArray<{ type: string; id?: string; name?: string }> };
+}): { id: string; name: string } | undefined {
+	if (event.id && event.toolName) return { id: event.id, name: event.toolName };
+	const block = event.partial?.content[event.contentIndex];
+	return block?.type === "toolCall" && block.id && block.name ? { id: block.id, name: block.name } : undefined;
 }
 
 /**
@@ -68,7 +83,7 @@ export class TurnMapper {
 		return this.#aborted;
 	}
 
-	handle(event: AgentSessionEvent): void {
+	handle(event: PiEvent): void {
 		switch (event.type) {
 			case "message_start":
 				if (asAssistant(event.message)) this.#messageIndex++;
@@ -171,7 +186,7 @@ export class TurnMapper {
 		return true;
 	}
 
-	#onAssistantEvent(event: Extract<AgentSessionEvent, { type: "message_update" }>["assistantMessageEvent"]): void {
+	#onAssistantEvent(event: Extract<PiEvent, { type: "message_update" }>["assistantMessageEvent"]): void {
 		switch (event.type) {
 			case "text_start":
 				this.#ensurePart(ResponsePartKind.Markdown, this.#partId(event.contentIndex));
@@ -194,10 +209,10 @@ export class TurnMapper {
 				break;
 			}
 			case "toolcall_start": {
-				const block = event.partial.content[event.contentIndex];
-				if (block?.type === "toolCall" && block.id) {
-					this.#streamingTools.set(`${this.#messageIndex}:${event.contentIndex}`, block.id);
-					this.#startTool(block.id, block.name);
+				const tool = startedToolCall(event);
+				if (tool) {
+					this.#streamingTools.set(`${this.#messageIndex}:${event.contentIndex}`, tool.id);
+					this.#startTool(tool.id, tool.name);
 				}
 				break;
 			}

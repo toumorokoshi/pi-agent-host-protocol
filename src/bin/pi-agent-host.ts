@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { createLogger, LOG_LEVELS, parseLogLevel } from "../core/logger.ts";
+import { createLogger, LOG_LEVELS, type Logger, parseLogLevel } from "../core/logger.ts";
 import { AgentHost } from "../host/agent-host.ts";
 import { loadSettings, saveSettings, settingsPath } from "../host/settings.ts";
-import { PiServices } from "../pi/services.ts";
+import { PI_MODES, type PiBackend, type PiMode, parsePiMode } from "../pi/agent.ts";
+import { EmbeddedBackend } from "../pi/embedded-backend.ts";
+import { RpcBackend } from "../pi/rpc-backend.ts";
+import { PiStartError } from "../pi/rpc-process.ts";
 import { listen } from "../transport/websocket.ts";
 
 const HELP = `Usage: pi-agent-host [options]
@@ -18,6 +21,10 @@ Options:
   --cwd <dir>        Default working directory offered to clients (default: current directory)
   --log-level <lvl>  Log level: ${LOG_LEVELS.join(", ")} (default: info, or $PI_AGENT_HOST_LOG_LEVEL)
   --debug            Shorthand for --log-level debug (logs every session interaction)
+  --pi-mode <mode>   How to run pi: ${PI_MODES.join(" or ")} (default: rpc, or $PI_AGENT_HOST_PI_MODE)
+                     rpc runs each session in its own \`pi --mode rpc\` process;
+                     embedded runs pi's SDK inside this process
+  --pi <path>        The pi executable for rpc mode (default: pi on PATH)
   -h, --help         Show this help
 
 Settings are stored in ${settingsPath()}.`;
@@ -40,6 +47,8 @@ async function main(): Promise<void> {
 			cwd: { type: "string" },
 			"log-level": { type: "string" },
 			debug: { type: "boolean", default: false },
+			"pi-mode": { type: "string" },
+			pi: { type: "string" },
 			help: { type: "boolean", short: "h", default: false },
 		},
 	});
@@ -60,14 +69,19 @@ async function main(): Promise<void> {
 	// Marks this process so the pi-agent-host extension stays inactive inside it.
 	process.env.PI_AGENT_HOST_DAEMON = "1";
 
-	const services = await PiServices.create();
+	const piMode = parsePiMode(values["pi-mode"] ?? process.env.PI_AGENT_HOST_PI_MODE ?? settings.piMode ?? "rpc");
+	const backend = await createBackend(piMode, values.pi ?? settings.pi, logger);
+	logger.info("pi backend", { mode: piMode });
 	const agentHost = new AgentHost({
-		services,
+		backend,
 		defaultDirectory: values.cwd ?? process.cwd(),
 		serverVersion: packageVersion(),
 		logger,
 	});
 	await agentHost.refreshAgents().catch((error) => {
+		if (error instanceof PiStartError) {
+			throw new Error(`${error.message}\nInstall pi, pass --pi <path>, or use --pi-mode embedded.`);
+		}
 		logger.warn("could not load models", { error: error instanceof Error ? error.message : String(error) });
 	});
 
@@ -88,6 +102,11 @@ async function main(): Promise<void> {
 	};
 	process.once("SIGINT", shutdown);
 	process.once("SIGTERM", shutdown);
+}
+
+async function createBackend(mode: PiMode, pi: string | undefined, logger: Logger): Promise<PiBackend> {
+	if (mode === "embedded") return EmbeddedBackend.create();
+	return new RpcBackend({ pi, logger });
 }
 
 main().catch((error) => {

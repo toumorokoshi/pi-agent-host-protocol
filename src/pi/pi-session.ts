@@ -1,4 +1,4 @@
-import type { AgentSession, AgentSessionEvent, SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	ActionType,
 	type ChatAction,
@@ -18,14 +18,14 @@ import {
 import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
 import { chatUri, fileUri, PROVIDER, pathFromFileUri, sessionUri } from "../core/uris.ts";
+import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
 import { turnsFromEntries } from "./history.ts";
-import { resolveModel, thinkingLevelOf } from "./models.ts";
-import type { PiServices } from "./services.ts";
+import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import { TurnMapper, type TurnOutcome } from "./turn-mapper.ts";
 
 export interface SessionHostContext {
 	readonly store: StateStore;
-	readonly services: PiServices;
+	readonly backend: PiBackend;
 	readonly logger: Logger;
 	/** Publishes `root/sessionSummaryChanged` for this session. */
 	summaryChanged(sessionId: string, changes: Partial<SessionSummary>): void;
@@ -44,12 +44,6 @@ interface ActiveTurn {
 /** What a run does: send a new user message, or continue a turn that ended in a resumable error. */
 type RunKind = { kind: "prompt"; message: Message } | { kind: "resume" };
 
-interface ImageInput {
-	type: "image";
-	data: string;
-	mimeType: string;
-}
-
 const TITLE_LENGTH = 80;
 const UNTITLED = "New session";
 
@@ -65,7 +59,7 @@ export class PiSession {
 	readonly createdAt: string;
 	readonly #ctx: SessionHostContext;
 	readonly #sessionManager: SessionManager;
-	#agent: Promise<AgentSession> | undefined;
+	#agent: Promise<PiAgent> | undefined;
 	#turn: ActiveTurn | undefined;
 	#lastRun: Promise<void> = Promise.resolve();
 	/** The turn whose last run ended in a resumable provider error, if any. */
@@ -93,7 +87,7 @@ export class PiSession {
 	/** A new, empty session. The pi agent starts immediately; `session/ready` follows. */
 	static create(ctx: SessionHostContext, id: string, cwd: string): PiSession {
 		const now = new Date().toISOString();
-		const session = new PiSession(ctx, id, cwd, ctx.services.newSessionManager(cwd, id), now);
+		const session = new PiSession(ctx, id, cwd, ctx.backend.newSessionManager(cwd, id), now);
 		ctx.store.addSession(id, session.#initialSessionState(UNTITLED, SessionLifecycle.Creating, SessionStatus.Idle), {
 			...session.#chatSummary(UNTITLED, SessionStatus.Idle, now),
 			turns: [],
@@ -103,7 +97,7 @@ export class PiSession {
 
 	/** An existing pi session file. History is loaded eagerly; the agent starts on the first turn. */
 	static open(ctx: SessionHostContext, path: string): PiSession {
-		const manager = ctx.services.openSessionManager(path);
+		const manager = ctx.backend.openSessionManager(path);
 		const header = manager.getHeader();
 		const id = manager.getSessionId();
 		const cwd = manager.getCwd();
@@ -243,7 +237,7 @@ export class PiSession {
 	/** Side effects of an accepted client session action (already applied to state). */
 	onSessionAction(action: StateAction): void {
 		if (action.type === ActionType.SessionTitleChanged) {
-			this.#sessionManager.appendSessionInfo(action.title);
+			this.#saveTitle(action.title);
 			this.#ctx.summaryChanged(this.id, { title: action.title });
 		}
 	}
@@ -254,22 +248,44 @@ export class PiSession {
 		this.#agent = undefined;
 		if (agent) {
 			try {
-				const session = await agent;
-				await session.abort();
-				session.dispose();
+				await (await agent).dispose();
 			} catch {
 				// Creation failed; nothing to dispose.
 			}
 		}
 	}
 
-	#ensureAgent(): Promise<AgentSession> {
+	/** The running agent, starting one if there is none or the last one's pi process exited. */
+	#ensureAgent(): Promise<PiAgent> {
 		if (this.#disposed) return Promise.reject(new Error("Session disposed"));
-		this.#agent ??= this.#ctx.services.createAgentSession(this.cwd, this.#sessionManager);
-		this.#agent.catch(() => {
-			this.#agent = undefined;
+		const start = () => this.#ctx.backend.startAgent(this.cwd, this.#sessionManager);
+		const previous = this.#agent;
+		const agent = previous ? previous.then((current) => (current.closed ? start() : current)) : start();
+		this.#agent = agent;
+		agent.catch(() => {
+			if (this.#agent === agent) this.#agent = undefined;
 		});
-		return this.#agent;
+		return agent;
+	}
+
+	/**
+	 * Saves a client rename to pi. Once an agent has been started it owns the
+	 * session file and writes the name (restarting if its pi exited);
+	 * otherwise the file is appended directly.
+	 */
+	#saveTitle(title: string): void {
+		if (!this.#agent) {
+			this.#sessionManager.appendSessionInfo(title);
+			return;
+		}
+		void this.#ensureAgent()
+			.then((agent) => agent.setSessionName(title))
+			.catch((error) => {
+				this.#ctx.logger.warn("could not save session title", {
+					session: this.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
 	}
 
 	/**
@@ -316,12 +332,8 @@ export class PiSession {
 					chars: run.kind === "prompt" ? run.message.text.length : undefined,
 					attachments: run.kind === "prompt" ? run.message.attachments?.length : undefined,
 				});
-				if (run.kind === "prompt") {
-					const { text, images } = promptInput(run.message);
-					await agent.prompt(text, { images, source: "rpc" });
-				} else {
-					await continueAfterError(agent);
-				}
+				if (run.kind === "prompt") await agent.prompt(promptInput(run.message));
+				else await agent.resume();
 				outcome = mapper.impliedOutcome();
 			}
 		} catch (error) {
@@ -349,7 +361,7 @@ export class PiSession {
 		this.#consumePending();
 	}
 
-	#logEvent(turn: ActiveTurn, event: AgentSessionEvent): void {
+	#logEvent(turn: ActiveTurn, event: PiEvent): void {
 		const fields = { session: this.id, turn: turn.id };
 		if (event.type === "tool_execution_start") {
 			this.#ctx.logger.debug("tool started", { ...fields, tool: event.toolName, toolCallId: event.toolCallId });
@@ -365,16 +377,14 @@ export class PiSession {
 		}
 	}
 
-	async #applyModel(agent: AgentSession, message: Message): Promise<void> {
+	async #applyModel(agent: PiAgent, message: Message): Promise<void> {
 		const selection = message.model;
 		if (!selection) return;
-		const model = resolveModel(this.#ctx.services.modelRuntime, selection);
+		const model = parseModelSelection(selection);
 		if (!model) throw new Error(`Unknown model: ${selection.id}`);
-		if (agent.model?.provider !== model.provider || agent.model?.id !== model.id) {
-			await agent.setModel(model);
-		}
+		await agent.setModel(model.provider, model.id);
 		const level = thinkingLevelOf(selection);
-		if (level && agent.thinkingLevel !== level) agent.setThinkingLevel(level);
+		if (level) await agent.setThinkingLevel(level);
 	}
 
 	/** Consumes steering and queued messages as the chat-channel spec describes. */
@@ -385,8 +395,7 @@ export class PiSession {
 			const { id, message } = chat.steeringMessage;
 			this.#dispatchChat({ type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Steering, id });
 			this.#ctx.logger.debug("steering message sent", { session: this.id, turn: this.#turn.id, message: id });
-			const { text, images } = promptInput(message);
-			void this.#agent?.then((agent) => agent.steer(text, images, { source: "rpc" })).catch(() => {});
+			void this.#agent?.then((agent) => agent.steer(promptInput(message))).catch(() => {});
 		}
 		const next = chat.queuedMessages?.[0];
 		if (next && !this.#turn && !chat.activeTurn) {
@@ -451,35 +460,8 @@ export class PiSession {
 	}
 }
 
-/**
- * Continues pi's run after a provider error without a new user message, the
- * way pi's own auto-retry does: the failed assistant reply is omitted from the
- * model context (a `context_edit` entry; the raw transcript keeps it), then the
- * agent loop continues from the preceding user message or tool results.
- */
-export async function continueAfterError(agent: AgentSession): Promise<void> {
-	const failed = lastErroredAssistantEntry(agent.sessionManager.getBranch());
-	if (failed) {
-		agent.sessionManager.appendContextEdit(failed, null);
-		agent.refreshContext();
-	}
-	await agent.agent.continue();
-}
-
-/** Id of the newest assistant entry if the branch ends in a provider error. */
-export function lastErroredAssistantEntry(entries: readonly SessionEntry[]): string | undefined {
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i]!;
-		if (entry.type !== "message") continue;
-		const message = entry.message as { role?: string; stopReason?: string };
-		if (message.role !== "assistant") return undefined;
-		return message.stopReason === "error" ? entry.id : undefined;
-	}
-	return undefined;
-}
-
 /** Builds pi prompt input from an AHP message and its attachments. */
-export function promptInput(message: Message): { text: string; images: ImageInput[] } {
+export function promptInput(message: Message): PromptInput {
 	const images: ImageInput[] = [];
 	const extra: string[] = [];
 	for (const attachment of message.attachments ?? []) {

@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { type FauxProviderHandle, fauxProvider } from "@earendil-works/pi-ai";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { type FauxResponseStep, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
 	type ActionEnvelope,
@@ -20,14 +21,17 @@ import {
 import WebSocket from "ws";
 import type { Logger } from "../src/core/logger.ts";
 import { AgentHost } from "../src/host/agent-host.ts";
-import { PiServices } from "../src/pi/services.ts";
+import type { PiBackend, PiMode } from "../src/pi/agent.ts";
+import { EmbeddedBackend } from "../src/pi/embedded-backend.ts";
+import { RpcBackend } from "../src/pi/rpc-backend.ts";
 import { type Listener, listen } from "../src/transport/websocket.ts";
 
 export interface TestHost {
 	readonly url: string;
 	readonly dir: string;
 	readonly cwd: string;
-	readonly faux: FauxProviderHandle;
+	readonly mode: PiMode;
+	readonly faux: FauxScript;
 	readonly host: AgentHost;
 	/** Stops the host but keeps its session files (to test restarts). */
 	stop(): Promise<void>;
@@ -35,45 +39,129 @@ export interface TestHost {
 	cleanup(): Promise<void>;
 }
 
+/** Scripts pi's faux model, in-process (embedded) or through the RPC child's faux extension. */
+export interface FauxScript {
+	setResponses(responses: FauxResponseStep[]): void;
+}
+
+/** Runs each test suite against both backends. */
+export const PI_MODES: readonly PiMode[] = ["rpc", "embedded"];
+
+/** pi's own CLI from node_modules, so RPC tests do not depend on an installed `pi`. */
+const PI_CLI = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "cli.js");
+const FAUX_EXTENSION = fileURLToPath(new URL("./fixtures/faux-provider.ts", import.meta.url));
+const FAUX_MODELS = [{ id: "faux-1", name: "Faux One" }];
+
+interface StartedBackend {
+	backend: PiBackend;
+	faux: FauxScript;
+	close(): Promise<void>;
+}
+
 /** Starts a host backed by pi's scripted faux model, isolated in a temp directory. */
-export async function startHost(options: { token?: string; dir?: string; logger?: Logger } = {}): Promise<TestHost> {
+export async function startHost(
+	options: { token?: string; dir?: string; logger?: Logger; mode?: PiMode } = {},
+): Promise<TestHost> {
+	const mode = options.mode ?? "rpc";
 	const dir = options.dir ?? (await mkdtemp(join(tmpdir(), "pi-agent-host-test-")));
 	const cwd = join(dir, "workspace");
 	await mkdir(cwd, { recursive: true });
-	const modelRuntime = await ModelRuntime.create({
-		authPath: join(dir, "auth.json"),
-		modelsPath: null,
-		allowModelNetwork: false,
-		refreshOnCreate: false,
+	const started = mode === "rpc" ? await startRpcBackend(dir, cwd, options.logger) : await startEmbeddedBackend(dir);
+	const host = new AgentHost({
+		backend: started.backend,
+		defaultDirectory: cwd,
+		serverVersion: "test",
+		logger: options.logger,
 	});
-	const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-1", name: "Faux One" }], tokensPerSecond: 2000 });
-	modelRuntime.registerNativeProvider(faux.provider);
-	// Without credentials pi does not list a provider's models as available.
-	await modelRuntime.setRuntimeApiKey("faux", "test-key");
-	const services = await PiServices.create({
-		agentDir: join(dir, "agent"),
-		sessionDir: join(dir, "sessions"),
-		modelRuntime,
-		sessionOverrides: { model: faux.getModel(), settingsManager: SettingsManager.inMemory() },
-	});
-	const host = new AgentHost({ services, defaultDirectory: cwd, serverVersion: "test", logger: options.logger });
 	await host.refreshAgents();
 	const listener: Listener = await listen(host, { host: "127.0.0.1", port: 0, token: options.token });
 	const stop = async () => {
 		await listener.close();
 		await host.dispose();
+		await started.close();
 	};
 	return {
 		url: listener.url,
 		dir,
 		cwd,
-		faux,
+		mode,
+		faux: started.faux,
 		host,
 		stop,
 		cleanup: async () => {
 			await stop();
 			await rm(dir, { recursive: true, force: true });
 		},
+	};
+}
+
+async function startEmbeddedBackend(dir: string): Promise<StartedBackend> {
+	const modelRuntime = await ModelRuntime.create({
+		authPath: join(dir, "auth.json"),
+		modelsPath: null,
+		allowModelNetwork: false,
+		refreshOnCreate: false,
+	});
+	const faux = fauxProvider({ provider: "faux", models: FAUX_MODELS, tokensPerSecond: 2000 });
+	modelRuntime.registerNativeProvider(faux.provider);
+	// Without credentials pi does not list a provider's models as available.
+	await modelRuntime.setRuntimeApiKey("faux", "test-key");
+	const backend = await EmbeddedBackend.create({
+		agentDir: join(dir, "agent"),
+		sessionDir: join(dir, "sessions"),
+		modelRuntime,
+		sessionOverrides: { model: faux.getModel(), settingsManager: SettingsManager.inMemory() },
+	});
+	return { backend, faux, close: async () => {} };
+}
+
+/**
+ * Runs pi's real CLI in RPC mode. The child loads `fixtures/faux-provider.ts`,
+ * which asks this process for each response, so factories still run here.
+ */
+async function startRpcBackend(dir: string, cwd: string, logger: Logger | undefined): Promise<StartedBackend> {
+	const agentDir = join(dir, "agent");
+	await mkdir(agentDir, { recursive: true });
+	await writeFile(join(agentDir, "auth.json"), JSON.stringify({ faux: { type: "api_key", key: "test-key" } }));
+	const model = fauxProvider({ provider: "faux", models: FAUX_MODELS }).getModel();
+	let steps: FauxResponseStep[] = [];
+	const state = { callCount: 0, deferredFetchCount: 0, cancelledDeferred: [] };
+	const server: Server = createServer((request, response) => {
+		let body = "";
+		request.on("data", (chunk) => {
+			body += chunk;
+		});
+		request.on("end", async () => {
+			state.callCount++;
+			const step = steps.shift();
+			const message =
+				step === undefined
+					? fauxAssistantMessage("", { stopReason: "error", errorMessage: "No more faux responses queued" })
+					: typeof step === "function"
+						? await step(JSON.parse(body), undefined, state, model)
+						: step;
+			response.end(JSON.stringify(message));
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const { port } = server.address() as { port: number };
+	const backend = new RpcBackend({
+		pi: PI_CLI,
+		agentDir,
+		sessionDir: join(dir, "sessions"),
+		args: ["-e", FAUX_EXTENSION, "--provider", "faux", "--model", "faux-1"],
+		env: { PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_AGENT_HOST_FAUX_URL: `http://127.0.0.1:${port}/` },
+		cwd,
+		logger,
+	});
+	return {
+		backend,
+		faux: {
+			setResponses: (responses) => {
+				steps = [...responses];
+			},
+		},
+		close: () => new Promise((resolve) => server.close(() => resolve())),
 	};
 }
 

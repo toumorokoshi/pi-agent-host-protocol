@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { type PiMode, parsePiMode } from "../pi/agent.ts";
 
 export interface HostSettings {
 	host: string;
@@ -9,6 +10,10 @@ export interface HostSettings {
 	port: number;
 	/** `null` disables the connection token. */
 	token: string | null;
+	/** How to run pi (`rpc` when unset). */
+	piMode?: PiMode;
+	/** The `pi` executable for RPC mode (`pi` on `PATH` when unset). */
+	pi?: string;
 }
 
 export function settingsPath(): string {
@@ -26,6 +31,8 @@ export async function loadSettings(path = settingsPath()): Promise<{ settings: H
 				host: typeof raw.host === "string" ? raw.host : "127.0.0.1",
 				port: typeof raw.port === "number" ? raw.port : 0,
 				token: raw.token === null ? null : typeof raw.token === "string" ? raw.token : randomToken(),
+				...(typeof raw.piMode === "string" ? { piMode: parsePiMode(raw.piMode) } : {}),
+				...(typeof raw.pi === "string" ? { pi: raw.pi } : {}),
 			},
 			created: false,
 		};

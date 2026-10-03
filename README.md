@@ -2,11 +2,11 @@
 
 An [Agent Host Protocol](https://github.com/microsoft/agent-host-protocol) (AHP) server for the [pi coding agent](https://github.com/earendil-works/pi). It lets the VS Code Agents window, and other AHP clients, create, list, resume and drive pi sessions over WebSocket.
 
-> **Status: milestone 1 of 3.** Sessions created by AHP clients run inside the host process. Live pi TUI sessions are not exposed yet; that is milestone 2 (see [Roadmap](#roadmap)).
+> **Status: milestone 1 of 3.** Sessions created by AHP clients run in `pi --mode rpc` processes started by the host (or in-process with `--pi-mode embedded`). Live pi TUI sessions are not exposed yet; that is milestone 2 (see [Roadmap](#roadmap)).
 
 ## Usage
 
-Requirements: Node.js 24 or later, and at least one model provider configured for pi (`~/.pi/agent`).
+Requirements: Node.js 24 or later, and at least one model provider configured for pi (`~/.pi/agent`). In the default `rpc` mode, the [`pi` CLI](https://github.com/earendil-works/pi) must also be installed and on your `PATH`, or passed with `--pi`.
 
 ```sh
 npm install
@@ -27,8 +27,21 @@ pi-agent-host listening on ws://127.0.0.1:63877?tkn=…
 | `--cwd <dir>` | current directory | Default working directory offered to clients |
 | `--log-level <level>` | `info` (or `$PI_AGENT_HOST_LOG_LEVEL`) | `error`, `warn`, `info` or `debug` |
 | `--debug` | off | Shorthand for `--log-level debug`: logs every session interaction |
+| `--pi-mode <mode>` | from settings, else `rpc` (or `$PI_AGENT_HOST_PI_MODE`) | `rpc` runs each session in its own `pi --mode rpc` process; `embedded` runs pi's SDK inside the host |
+| `--pi <path>` | from settings, else `pi` on `PATH` | The `pi` executable used in `rpc` mode |
 
 Logs go to stderr. At the default level they show client connections and handshakes; `--debug` adds every request, client action, turn and tool call. See [docs/logging.md](docs/logging.md).
+
+### pi modes
+
+| | `rpc` (default) | `embedded` |
+|---|---|---|
+| How pi runs | One `pi --mode rpc` child process per open session | pi's SDK inside the host process |
+| pi version, settings and extensions | Your installed `pi` | The `@earendil-works/pi-coding-agent` bundled with the host |
+| A crashing session | Ends its own turn with an error; the next turn starts a new `pi` | Can take the host down |
+| First turn of a session | Waits for `pi` to start (about 0.7 s) | Immediate |
+
+Both modes share the same session files, so you can switch between them. Settings can also hold `"piMode"` and `"pi"`. See [specs/pi-backends.md](specs/pi-backends.md).
 
 `PI_AGENT_HOST_DIR` overrides the settings directory and must be an absolute path. To disable the token permanently, set `"token": null` in the settings file. Keep the token enabled whenever the listener can be reached from beyond localhost.
 
@@ -126,7 +139,7 @@ Not used: changesets, MCP, annotations, automations, canvases, input requests (e
 - **Protocol state** (`src/core/state-store.ts`) uses the official reducers from `@microsoft/agent-host-protocol`, so host state is exactly what clients rebuild. Every action gets a host-wide `serverSeq` and is kept in a replay buffer for `reconnect`.
 - **URIs** (`src/core/uris.ts`): VS Code addresses sessions as `<provider>:/<id>` and derives chat URIs as `ahp-chat://default/<base64url(sessionUri)>`. It does not use the URIs the host publishes. So this host publishes exactly those shapes, and also accepts the spec's `ahp-session:/` and `ahp-chat:/` forms. No per-connection URI rewriting is needed.
 - **Connections** (`src/host/connection.ts`) process messages in order, except `ping`. A subscription's snapshot is taken, registered and sent in the same tick, so no action can slip in between.
-- **pi binding**: `src/pi/pi-session.ts` maps one AHP session to one pi `AgentSession`. `src/pi/turn-mapper.ts` turns pi's event stream into chat actions. `src/pi/history.ts` rebuilds turns from session files.
+- **pi binding**: `src/pi/pi-session.ts` maps one AHP session to one pi agent through the `PiAgent` / `PiBackend` shim in `src/pi/agent.ts`. Two backends implement it: `src/pi/rpc-backend.ts` (a `pi --mode rpc` child per session) and `src/pi/embedded-backend.ts` (pi's SDK in-process). `src/pi/turn-mapper.ts` turns pi's event stream into chat actions. `src/pi/history.ts` rebuilds turns from session files.
 
 ## Development
 
@@ -139,7 +152,7 @@ npm run build       # compile to dist/ (the published bin)
 
 Known gaps are tracked in [GAPS.md](GAPS.md), and design notes for individual features are in [specs/](specs/).
 
-The tests start a real host on a random port in a temporary directory, with pi's faux provider standing in for a model. A minimal client then speaks VS Code's URI dialect over WebSocket and checks its state using the official reducers.
+The tests start a real host on a random port in a temporary directory, with pi's faux provider standing in for a model. Session tests run in both pi modes. In `rpc` mode the test host runs pi's CLI from `node_modules` and loads a test extension that fetches the faux responses from the test process. A minimal client then speaks VS Code's URI dialect over WebSocket and checks its state using the official reducers.
 
 ## Roadmap
 

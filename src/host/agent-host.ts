@@ -28,9 +28,9 @@ import {
 	ROOT_CHANNEL,
 	sessionUri,
 } from "../core/uris.ts";
-import { availableModels } from "../pi/models.ts";
+import type { PiBackend } from "../pi/agent.ts";
+import { toSessionModelInfo } from "../pi/models.ts";
 import { PiSession, type SessionHostContext } from "../pi/pi-session.ts";
-import type { PiServices } from "../pi/services.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
 import { Connection, type ConnectionHandler, type RESPONDED, type Reply } from "./connection.ts";
@@ -39,7 +39,7 @@ import { ResourceService } from "./resources.ts";
 import { TerminalService } from "./terminals.ts";
 
 export interface AgentHostOptions {
-	services: PiServices;
+	backend: PiBackend;
 	/** Directory offered to clients as the default working directory. */
 	defaultDirectory: string;
 	serverVersion?: string;
@@ -83,7 +83,7 @@ const DENIED_RESOURCE_METHODS = new Set([
 /** The AHP host: routes protocol commands to pi sessions and owns all protocol state. */
 export class AgentHost implements ConnectionHandler, SessionHostContext {
 	readonly store: StateStore;
-	readonly services: PiServices;
+	readonly backend: PiBackend;
 	readonly #defaultDirectory: string;
 	readonly #serverVersion: string;
 	readonly logger: Logger;
@@ -98,7 +98,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 	#activeSessions = 0;
 
 	constructor(options: AgentHostOptions) {
-		this.services = options.services;
+		this.backend = options.backend;
 		this.#defaultDirectory = options.defaultDirectory;
 		this.#serverVersion = options.serverVersion ?? "0.0.0";
 		this.logger = options.logger ?? silentLogger;
@@ -123,7 +123,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 
 	/** Loads the model catalog into root state. */
 	async refreshAgents(): Promise<void> {
-		const models = await availableModels(this.services.modelRuntime);
+		const models = (await this.backend.models()).map(toSessionModelInfo);
 		const [agent] = this.store.root.agents;
 		if (!agent || JSON.stringify(agent.models) === JSON.stringify(models)) return;
 		this.store.dispatch(ROOT_CHANNEL, { type: ActionType.RootAgentsChanged, agents: [{ ...agent, models }] });
@@ -150,6 +150,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 		this.#sessions.clear();
 		this.#terminals.disposeAll();
 		await this.#watches.disposeAll();
+		await this.backend.dispose();
 	}
 
 	#isSubscribed(channel: string): boolean {
@@ -441,7 +442,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 	#catalogSessions(): Promise<SessionInfo[]> {
 		const now = Date.now();
 		if (!this.#catalog || now - this.#catalog.at > CATALOG_TTL_MS) {
-			const sessions = this.services.listSessions().catch(() => []);
+			const sessions = this.backend.listSessions().catch(() => []);
 			this.#catalog = { at: now, sessions };
 		}
 		return this.#catalog.sessions;
