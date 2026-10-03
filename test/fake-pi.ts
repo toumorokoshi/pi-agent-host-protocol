@@ -1,4 +1,6 @@
-import type { RpcChannel, RpcRecord } from "../src/pi/rpc-channel.ts";
+import { connect } from "node:net";
+import { type AttachRequest, BRIDGE_PROTOCOL } from "../src/bridge/protocol.ts";
+import { JsonlChannel, type RpcChannel, type RpcRecord } from "../src/pi/rpc-channel.ts";
 
 const USAGE = {
 	input: 1,
@@ -45,6 +47,8 @@ export class FakePi {
 	readonly commands: RpcRecord[] = [];
 	/** Reply text for host prompts; each prompt plays one run. */
 	replies: string[] = [];
+	/** The live branch returned for `get_branch`. */
+	entries: unknown[] = [];
 
 	constructor(channel: RpcChannel) {
 		this.channel = channel;
@@ -64,6 +68,9 @@ export class FakePi {
 			case "get_commands":
 				this.channel.respond(command, { data: { commands: [{ name: "ahp-resume" }] } });
 				break;
+			case "get_branch":
+				this.channel.respond(command, { data: { entries: this.entries } });
+				break;
 			case "prompt":
 				this.channel.respond(command, { data: { disposition: "started" } });
 				this.emit(runEvents(String(command.message), this.replies.shift() ?? "OK"));
@@ -71,5 +78,42 @@ export class FakePi {
 			default:
 				this.channel.respond(command, {});
 		}
+	}
+}
+
+/** A fake interactive pi connected to the host's bridge socket. */
+export class FakeBridge extends FakePi {
+	static connect(path: string): Promise<FakeBridge> {
+		return new Promise((resolve, reject) => {
+			const socket = connect(path);
+			socket.setEncoding("utf8");
+			const closed = new Promise<void>((done) => socket.once("close", () => done()));
+			const channel = new JsonlChannel(
+				{
+					write: (text) => socket.write(text),
+					close: async () => {
+						socket.end();
+						await closed;
+					},
+				},
+				{ idPrefix: "bridge" },
+			);
+			socket.on("data", (chunk: string) => channel.push(chunk));
+			socket.once("close", () => channel.end(new Error("Socket closed")));
+			socket.once("connect", () => resolve(new FakeBridge(channel)));
+			socket.once("error", reject);
+		});
+	}
+
+	attach(info: Partial<AttachRequest> & { sessionId: string; cwd: string }): Promise<{ url?: string }> {
+		return this.channel.request({ type: "attach", protocol: BRIDGE_PROTOCOL, pid: process.pid, ...info });
+	}
+
+	detach(sessionId: string): Promise<unknown> {
+		return this.channel.request({ type: "detach", sessionId });
+	}
+
+	close(): Promise<void> {
+		return this.channel.close();
 	}
 }

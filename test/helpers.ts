@@ -19,8 +19,9 @@ import {
 	sessionReducer,
 } from "@microsoft/agent-host-protocol";
 import WebSocket from "ws";
-import type { Logger } from "../src/core/logger.ts";
+import { type Logger, silentLogger } from "../src/core/logger.ts";
 import { AgentHost } from "../src/host/agent-host.ts";
+import { BridgeServer } from "../src/host/bridges.ts";
 import type { PiBackend, PiMode } from "../src/pi/agent.ts";
 import { EmbeddedBackend } from "../src/pi/embedded-backend.ts";
 import { RpcBackend } from "../src/pi/rpc-backend.ts";
@@ -32,6 +33,8 @@ export interface TestHost {
 	readonly dir: string;
 	readonly cwd: string;
 	readonly mode: PiMode;
+	/** The bridge socket, when started with `bridge: true`. */
+	readonly socketPath: string | undefined;
 	readonly faux: FauxScript;
 	readonly host: AgentHost;
 	/** Stops the host but keeps its session files (to test restarts). */
@@ -61,7 +64,7 @@ interface StartedBackend {
 
 /** Starts a host backed by pi's scripted faux model, isolated in a temp directory. */
 export async function startHost(
-	options: { token?: string; dir?: string; logger?: Logger; mode?: PiMode } = {},
+	options: { token?: string; dir?: string; logger?: Logger; mode?: PiMode; bridge?: boolean } = {},
 ): Promise<TestHost> {
 	const mode = options.mode ?? "rpc";
 	const dir = options.dir ?? (await mkdtemp(join(tmpdir(), "pi-agent-host-test-")));
@@ -76,7 +79,12 @@ export async function startHost(
 	});
 	await host.refreshAgents();
 	const listener: Listener = await listen(host, { host: "127.0.0.1", port: 0, token: options.token });
+	const bridge = options.bridge
+		? await BridgeServer.listen(join(dir, "host.sock"), host, options.logger ?? silentLogger)
+		: undefined;
+	if (bridge) bridge.url = listener.url;
 	const stop = async () => {
+		await bridge?.close();
 		await listener.close();
 		await host.dispose();
 		await started.close();
@@ -86,6 +94,7 @@ export async function startHost(
 		dir,
 		cwd,
 		mode,
+		socketPath: bridge?.path,
 		faux: started.faux,
 		host,
 		stop,

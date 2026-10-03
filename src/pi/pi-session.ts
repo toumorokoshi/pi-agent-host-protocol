@@ -1,4 +1,5 @@
-import type { SessionManager } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	ActionType,
 	type ChatAction,
@@ -62,7 +63,7 @@ export class PiSession {
 	readonly cwd: string;
 	readonly createdAt: string;
 	readonly #ctx: SessionHostContext;
-	readonly #sessionManager: SessionManager;
+	#sessionManager: SessionManager;
 	#agent: Promise<PiAgent> | undefined;
 	#turn: ActiveTurn | undefined;
 	#lastRun: Promise<void> = Promise.resolve();
@@ -112,13 +113,41 @@ export class PiSession {
 	/** An existing pi session file. History is loaded eagerly; the agent starts on the first turn. */
 	static open(ctx: SessionHostContext, path: string): PiSession {
 		const manager = ctx.backend.openSessionManager(path);
+		return PiSession.#fromHistory(ctx, manager, manager.getBranch(), manager.getSessionName());
+	}
+
+	/**
+	 * A session open in an interactive pi (attached through the bridge).
+	 * History comes from pi's live branch; `agent` drives the TUI's session.
+	 */
+	static live(
+		ctx: SessionHostContext,
+		info: { sessionId: string; sessionFile?: string; cwd: string; name?: string },
+		agent: PiAgent,
+		entries: readonly SessionEntry[],
+	): PiSession {
+		const manager =
+			info.sessionFile && existsSync(info.sessionFile)
+				? ctx.backend.openSessionManager(info.sessionFile)
+				: ctx.backend.newSessionManager(info.cwd, info.sessionId);
+		const session = PiSession.#fromHistory(ctx, manager, entries, info.name, info.sessionId, info.cwd);
+		session.#agent = Promise.resolve(session.#observe(agent));
+		return session;
+	}
+
+	static #fromHistory(
+		ctx: SessionHostContext,
+		manager: SessionManager,
+		entries: readonly SessionEntry[],
+		name: string | undefined,
+		id = manager.getSessionId(),
+		cwd = manager.getCwd(),
+	): PiSession {
 		const header = manager.getHeader();
-		const id = manager.getSessionId();
-		const cwd = manager.getCwd();
 		const createdAt = header?.timestamp ?? new Date().toISOString();
 		const session = new PiSession(ctx, id, cwd, manager, createdAt);
-		const turns = turnsFromEntries(manager.getBranch());
-		const title = manager.getSessionName() ?? (turns[0] ? titleFrom(turns[0].message.text) : UNTITLED);
+		const turns = turnsFromEntries([...entries]);
+		const title = name ?? (turns[0] ? titleFrom(turns[0].message.text) : UNTITLED);
 		const lastTurn = turns.at(-1);
 		const modifiedAt =
 			lastTurn?.startedAt && lastTurn.duration !== undefined
@@ -254,6 +283,42 @@ export class PiSession {
 			this.#saveTitle(action.title);
 			this.#ctx.summaryChanged(this.id, { title: action.title });
 		}
+	}
+
+	/**
+	 * Hands the session to a live TUI pi (single writer per session file).
+	 * A pi process the host started for it is stopped once its current run
+	 * has finished; new runs go to `agent`.
+	 */
+	adoptAgent(agent: PiAgent): void {
+		const previous = this.#agent;
+		this.#agent = Promise.resolve(this.#observe(agent));
+		if (!previous) return;
+		const lastRun = this.#lastRun;
+		void previous
+			.then(async (old) => {
+				if (old === agent) return;
+				await lastRun;
+				await old.dispose();
+			})
+			.catch(() => {});
+	}
+
+	/**
+	 * The live TUI pi let go of the session (detached, switched session or
+	 * quit). A turn it was running ends in an error, and the next turn starts
+	 * a pi process in the host on the same session file.
+	 */
+	agentDetached(agent: PiAgent, sessionFile: string | undefined): void {
+		void this.#agent?.then((current) => {
+			if (current !== agent) return;
+			const turn = this.#externalRun;
+			this.#externalRun = undefined;
+			if (turn) this.#finishExternalTurn(turn, { kind: "error", message: "pi closed the session" });
+			if (sessionFile && existsSync(sessionFile)) {
+				this.#sessionManager = this.#ctx.backend.openSessionManager(sessionFile);
+			}
+		});
 	}
 
 	async dispose(): Promise<void> {

@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { bridgeSocketPath } from "../bridge/protocol.ts";
 import { createLogger, LOG_LEVELS, type Logger, parseLogLevel } from "../core/logger.ts";
 import { AgentHost } from "../host/agent-host.ts";
+import { BridgeServer, HostAlreadyRunningError } from "../host/bridges.ts";
 import { loadSettings, saveSettings, settingsPath } from "../host/settings.ts";
 import { PI_MODES, type PiBackend, type PiMode, parsePiMode } from "../pi/agent.ts";
 import { EmbeddedBackend } from "../pi/embedded-backend.ts";
@@ -25,6 +27,7 @@ Options:
                      rpc runs each session in its own \`pi --mode rpc\` process;
                      embedded runs pi's SDK inside this process
   --pi <path>        The pi executable for rpc mode (default: pi on PATH)
+  --no-bridge        Do not accept live sessions from interactive pi processes
   -h, --help         Show this help
 
 Settings are stored in ${settingsPath()}.`;
@@ -49,6 +52,7 @@ async function main(): Promise<void> {
 			debug: { type: "boolean", default: false },
 			"pi-mode": { type: "string" },
 			pi: { type: "string" },
+			"no-bridge": { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
 		},
 	});
@@ -78,6 +82,19 @@ async function main(): Promise<void> {
 		serverVersion: packageVersion(),
 		logger,
 	});
+	// The bridge socket doubles as the single-instance lock: interactive pi
+	// processes auto-start hosts, and two may race.
+	let bridge: BridgeServer | undefined;
+	if (!values["no-bridge"]) {
+		try {
+			bridge = await BridgeServer.listen(bridgeSocketPath(settingsPath()), agentHost, logger);
+		} catch (error) {
+			if (!(error instanceof HostAlreadyRunningError)) throw error;
+			console.log(error.message);
+			return;
+		}
+	}
+
 	await agentHost.refreshAgents().catch((error) => {
 		if (error instanceof PiStartError) {
 			throw new Error(`${error.message}\nInstall pi, pass --pi <path>, or use --pi-mode embedded.`);
@@ -90,12 +107,14 @@ async function main(): Promise<void> {
 		await saveSettings({ ...settings, port: listener.port });
 	}
 
+	if (bridge) bridge.url = listener.url;
 	console.log(`pi-agent-host listening on ${listener.url}`);
 	if (token === undefined && host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
 		logger.warn("listening beyond localhost without a connection token");
 	}
 
 	const shutdown = async () => {
+		await bridge?.close();
 		await listener.close();
 		await agentHost.dispose();
 		process.exit(0);

@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import type { SessionInfo } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry, SessionInfo } from "@earendil-works/pi-coding-agent";
 import {
 	type ActionEnvelope,
 	type ActionOrigin,
@@ -17,6 +17,7 @@ import {
 	type StateAction,
 	type TerminalClaim,
 } from "@microsoft/agent-host-protocol";
+import type { AttachRequest } from "../bridge/protocol.ts";
 import { type Logger, silentLogger } from "../core/logger.ts";
 import { StateStore } from "../core/state-store.ts";
 import {
@@ -31,8 +32,11 @@ import {
 import type { PiBackend } from "../pi/agent.ts";
 import { toSessionModelInfo } from "../pi/models.ts";
 import { PiSession, type SessionHostContext } from "../pi/pi-session.ts";
+import { connectRpcAgent } from "../pi/rpc-agent.ts";
+import type { RpcChannel } from "../pi/rpc-channel.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
+import type { LiveSessionHandler } from "./bridges.ts";
 import { Connection, type ConnectionHandler, type RESPONDED, type Reply } from "./connection.ts";
 import { ResourceWatchService } from "./resource-watches.ts";
 import { ResourceService } from "./resources.ts";
@@ -81,7 +85,7 @@ const DENIED_RESOURCE_METHODS = new Set([
 ]);
 
 /** The AHP host: routes protocol commands to pi sessions and owns all protocol state. */
-export class AgentHost implements ConnectionHandler, SessionHostContext {
+export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSessionHandler {
 	readonly store: StateStore;
 	readonly backend: PiBackend;
 	readonly #defaultDirectory: string;
@@ -155,6 +159,35 @@ export class AgentHost implements ConnectionHandler, SessionHostContext {
 
 	#isSubscribed(channel: string): boolean {
 		return [...this.#connections].some((connection) => connection.isSubscribed(channel));
+	}
+
+	// ── LiveSessionHandler ────────────────────────────────────────────────
+
+	/**
+	 * A session open in an interactive pi attached through the bridge. The
+	 * TUI becomes the session's only writer: a session the host already has
+	 * hands over to it, otherwise a new one is announced with history from
+	 * pi's live branch.
+	 */
+	async attachLive(info: AttachRequest, channel: RpcChannel): Promise<void> {
+		const agent = await connectRpcAgent(channel, this.logger);
+		let session = this.#sessions.get(info.sessionId);
+		if (session) {
+			session.adoptAgent(agent);
+		} else {
+			const { entries } = await channel.request<{ entries: SessionEntry[] }>({ type: "get_branch" });
+			session = this.#sessions.get(info.sessionId);
+			if (session) {
+				session.adoptAgent(agent);
+			} else {
+				session = PiSession.live(this, info, agent, entries);
+				this.#sessions.set(info.sessionId, session);
+				this.#notifyRoot("root/sessionAdded", { summary: session.summary() });
+			}
+		}
+		const attached = session;
+		channel.onClose(() => attached.agentDetached(agent, info.sessionFile));
+		this.logger.debug("live session ready", { session: info.sessionId, pid: info.pid });
 	}
 
 	// ── SessionHostContext ────────────────────────────────────────────────
