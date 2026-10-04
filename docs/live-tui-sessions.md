@@ -5,8 +5,8 @@
 ## Setup
 
 ```sh
-cd /path/to/pi-ahp && npm install && npm run build
-pi install /path/to/pi-ahp
+cd /path/to/pi-agent-host-protocol && npm install && npm run build
+pi install /path/to/pi-agent-host-protocol
 ```
 
 Once the package is published, `pi install npm:pi-agent-host-protocol` will be enough. pi loads `dist/extension/index.js` from the package (the `"pi"` field in `package.json`).

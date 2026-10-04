@@ -64,4 +64,4 @@ Known issues and features not yet implemented.
 
 ## Tooling
 
-- **Not published:** the package is named `pi-agent-host-protocol` (free on npm as of 2026-10-04; `pi-ahp` is taken) but has not been published. The GitHub repository is still `pi-ahp`.
+- **Not published:** the package is named `pi-agent-host-protocol` (free on npm as of 2026-10-04; `pi-ahp` is taken) but has not been published.

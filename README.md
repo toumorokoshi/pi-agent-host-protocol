@@ -70,7 +70,7 @@ This package is also a pi package. Its extension shares the session of every int
 
 ```sh
 npm install && npm run build
-pi install /path/to/pi-ahp       # once published: pi install npm:pi-agent-host-protocol
+pi install /path/to/pi-agent-host-protocol       # once published: pi install npm:pi-agent-host-protocol
 ```
 
 Then start `pi` as usual:
