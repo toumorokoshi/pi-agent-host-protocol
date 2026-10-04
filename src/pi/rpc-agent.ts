@@ -1,4 +1,4 @@
-import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { JsonAgentSessionEvent, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { Logger } from "../core/logger.ts";
 import type { PiAgent, PiEvent, PromptInput } from "./agent.ts";
 import { RESUME_COMMAND } from "./extensions/ahp-resume.ts";
@@ -112,6 +112,11 @@ export class RpcAgent implements PiAgent {
 
 	async setSessionName(name: string): Promise<void> {
 		await this.#child.request({ type: "set_session_name", name });
+	}
+
+	async commands(): Promise<readonly SlashCommandInfo[]> {
+		const result = await this.#child.request<{ commands: SlashCommandInfo[] }>({ type: "get_commands" });
+		return result.commands;
 	}
 
 	dispose(): Promise<void> {

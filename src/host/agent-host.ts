@@ -6,6 +6,8 @@ import {
 	ActionType,
 	AhpErrorCodes,
 	type ChatAction,
+	CompletionItemKind,
+	type CompletionsResult,
 	type InitializeResult,
 	JsonRpcErrorCodes,
 	type ListSessionsResult,
@@ -30,6 +32,7 @@ import {
 	sessionUri,
 } from "../core/uris.ts";
 import type { PiBackend } from "../pi/agent.ts";
+import { COMPLETION_TRIGGER_CHARACTERS } from "../pi/customizations.ts";
 import { toSessionModelInfo } from "../pi/models.ts";
 import { PiSession, type SessionHostContext } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
@@ -230,8 +233,9 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			case "resolveSessionConfig":
 				return { schema: { type: "object", properties: {} }, values: {} };
 			case "sessionConfigCompletions":
-			case "completions":
 				return { items: [] };
+			case "completions":
+				return this.#completions(params);
 			case "authenticate":
 				return {};
 			case "resourceRead":
@@ -297,6 +301,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			serverInfo: { name: "pi-agent-host-protocol", version: this.#serverVersion },
 			snapshots,
 			defaultDirectory: fileUri(this.#defaultDirectory),
+			completionTriggerCharacters: COMPLETION_TRIGGER_CHARACTERS,
 		};
 		return reply(result);
 	}
@@ -379,6 +384,28 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		if (this.#sessions.has(ref.sessionId)) return;
 		this.#sessions.set(ref.sessionId, PiSession.open(this, info.path));
 		this.logger.debug("session loaded", { session: ref.sessionId, path: info.path });
+	}
+
+	/** Slash-command completions for a user message. Best effort: failures return no items. */
+	async #completions(params: Record<string, unknown>): Promise<CompletionsResult> {
+		const channel = requireString(params.channel, "channel");
+		const text = typeof params.text === "string" ? params.text : "";
+		const offset = typeof params.offset === "number" ? params.offset : text.length;
+		const ref = parseChannel(channel);
+		if (params.kind !== CompletionItemKind.UserMessage || (ref.kind !== "chat" && ref.kind !== "session")) {
+			return { items: [] };
+		}
+		try {
+			await this.#load(channel);
+			const session = this.#sessions.get(ref.sessionId);
+			return { items: (await session?.completions(text, offset)) ?? [] };
+		} catch (error) {
+			this.logger.debug("completions failed", {
+				channel,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return { items: [] };
+		}
 	}
 
 	async #createSession(params: Record<string, unknown>): Promise<null> {

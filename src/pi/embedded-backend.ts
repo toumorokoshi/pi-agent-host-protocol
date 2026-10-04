@@ -5,6 +5,7 @@ import {
 	type SessionEntry,
 	type SessionInfo,
 	SessionManager,
+	type SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
@@ -124,6 +125,37 @@ class EmbeddedAgent implements PiAgent {
 
 	async setSessionName(name: string): Promise<void> {
 		this.#session.sessionManager.appendSessionInfo(name);
+	}
+
+	/** The same list pi's RPC `get_commands` returns. */
+	async commands(): Promise<readonly SlashCommandInfo[]> {
+		const session = this.#session;
+		return [
+			...session.extensionRunner.getRegisteredCommands().map(
+				(command): SlashCommandInfo => ({
+					name: command.invocationName,
+					description: command.description,
+					source: "extension",
+					sourceInfo: command.sourceInfo,
+				}),
+			),
+			...session.promptTemplates.map(
+				(template): SlashCommandInfo => ({
+					name: template.name,
+					description: template.description,
+					source: "prompt",
+					sourceInfo: template.sourceInfo,
+				}),
+			),
+			...session.resourceLoader.getSkills().skills.map(
+				(skill): SlashCommandInfo => ({
+					name: `skill:${skill.name}`,
+					description: skill.description,
+					source: "skill",
+					sourceInfo: skill.sourceInfo,
+				}),
+			),
+		];
 	}
 
 	async dispose(): Promise<void> {

@@ -36,7 +36,7 @@ export async function executeHostCommand(command: RpcRecord, pi: BridgeApi, ctx:
 				isStreaming: !ctx.isIdle(),
 			};
 		case "get_commands":
-			return { commands: pi.getCommands().map((info) => ({ name: info.name })) };
+			return { commands: pi.getCommands() };
 		case "get_branch":
 			return { entries: ctx.sessionManager.getBranch() };
 		case "prompt": {

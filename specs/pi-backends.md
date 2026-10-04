@@ -22,7 +22,7 @@ In rpc mode, `--pi <path>` (or `"pi"` in `settings.json`) picks the executable. 
 `PiSession` (protocol logic: turns, queueing, steering, cancellation, resume validation, titles) talks only to two interfaces in `src/pi/agent.ts`:
 
 - `PiBackend`: `models()`, `listSessions()`, `newSessionManager()`, `openSessionManager()`, `startAgent()` and `dispose()`.
-- `PiAgent`: `prompt()` (resolves when the run settles), `resume()`, `steer()`, `abort()`, `setModel()`, `setThinkingLevel()`, `setSessionName()`, `subscribe()`, `dispose()`, plus `model`, `thinkingLevel` and `closed`.
+- `PiAgent`: `prompt()` (resolves when the run settles), `resume()`, `steer()`, `abort()`, `setModel()`, `setThinkingLevel()`, `setSessionName()`, `commands()` (pi's slash commands, see [skills.md](skills.md)), `subscribe()`, `dispose()`, plus `model`, `thinkingLevel` and `closed`.
 
 Events are `PiEvent`, the union of the SDK's `AgentSessionEvent` and the RPC wire form (`JsonAgentSessionEvent`). The wire form drops the cumulative `partial` snapshots from `message_update`, so `TurnMapper` reads tool-call ids from either form (`startedToolCall`).
 

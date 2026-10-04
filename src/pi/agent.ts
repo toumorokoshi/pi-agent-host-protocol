@@ -3,6 +3,7 @@ import type {
 	JsonAgentSessionEvent,
 	SessionInfo,
 	SessionManager,
+	SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 
@@ -59,6 +60,8 @@ export interface PiAgent {
 	setModel(provider: string, id: string): Promise<void>;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
 	setSessionName(name: string): Promise<void>;
+	/** pi's slash commands: extension commands, prompt templates and skills (`skill:<name>`). */
+	commands(): Promise<readonly SlashCommandInfo[]>;
 	dispose(): Promise<void>;
 }
 

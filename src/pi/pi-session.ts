@@ -5,6 +5,7 @@ import {
 	type ChatAction,
 	type ChatState,
 	type ChatSummary,
+	type CompletionItem,
 	type Message,
 	MessageAttachmentKind,
 	MessageKind,
@@ -21,6 +22,13 @@ import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
 import { chatUri, fileUri, PROVIDER, pathFromFileUri, sessionUri } from "../core/uris.ts";
 import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
+import {
+	slashCompletions,
+	toCustomizations,
+	type UserCommand,
+	userCommands,
+	withSkillFlags,
+} from "./customizations.ts";
 import { turnsFromEntries, userMessageText } from "./history.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import { TurnMapper, type TurnOutcome } from "./turn-mapper.ts";
@@ -81,6 +89,8 @@ export class PiSession {
 	#resumableTurn: string | undefined;
 	/** Runs started per turn, so a resumed run gets fresh response part ids. */
 	readonly #attempts = new Map<string, number>();
+	/** Skills and prompt templates of the current agent, loaded when it is first observed. */
+	#commands: Promise<readonly UserCommand[]> | undefined;
 	#disposed = false;
 	#hasTurns: boolean;
 
@@ -196,6 +206,15 @@ export class PiSession {
 			modifiedAt: chat?.modifiedAt ?? this.createdAt,
 			workingDirectories: [fileUri(this.cwd)],
 		};
+	}
+
+	/**
+	 * Slash-command completions for a message being typed. Starts the agent
+	 * if the session has none yet, since its commands come from pi.
+	 */
+	async completions(text: string, offset: number): Promise<CompletionItem[]> {
+		if (!this.#commands) await this.#ensureAgent();
+		return slashCompletions((await this.#commands) ?? [], text, offset);
 	}
 
 	/** Returns a rejection reason for a client-dispatched chat action, or `undefined` to accept it. */
@@ -448,8 +467,30 @@ export class PiSession {
 		if (!this.#observed.has(agent)) {
 			this.#observed.add(agent);
 			agent.subscribe((event) => this.#onAgentEvent(event));
+			this.#loadCommands(agent);
 		}
 		return agent;
+	}
+
+	/** Reads the agent's skills and prompt templates and publishes them as session customizations. */
+	#loadCommands(agent: PiAgent): void {
+		const loaded = agent.commands().then((commands) => withSkillFlags(userCommands(commands)));
+		this.#commands = loaded;
+		loaded
+			.then((commands) => {
+				if (this.#commands !== loaded || this.#disposed) return;
+				const customizations = toCustomizations(commands);
+				const current = this.#ctx.store.session(this.id)?.customizations ?? [];
+				if (JSON.stringify(current) === JSON.stringify(customizations)) return;
+				this.#dispatchSession({ type: ActionType.SessionCustomizationsChanged, customizations });
+			})
+			.catch((error) => {
+				if (this.#commands === loaded) this.#commands = undefined;
+				this.#ctx.logger.warn("could not read pi commands", {
+					session: this.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
 	}
 
 	/**

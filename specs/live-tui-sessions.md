@@ -49,7 +49,7 @@ Bridge → host:
 Host → bridge (a subset of pi's RPC commands, same field names):
 - `prompt` (with `streamingBehavior`), `steer`, `abort`;
 - `set_model`, `set_thinking_level`, `set_session_name`;
-- `get_state`, `get_commands`;
+- `get_state`, `get_commands` (pi's full command info, used for skills; see [skills.md](skills.md));
 - `get_branch` (new): the live branch entries, used for history instead of reading a file that may lag behind.
 
 A protocol version mismatch is rejected with a `response` error, and the bridge shows it in the TUI with `ctx.ui.notify`.

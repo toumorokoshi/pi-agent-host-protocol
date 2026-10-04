@@ -104,6 +104,18 @@ describe("bridge commands", () => {
 		});
 		await assert.rejects(executeHostCommand({ type: "bash" }, pi, ctx), /Unknown command/);
 	});
+
+	test("get_commands forwards pi's full command info, including skill files", async () => {
+		const { pi, ctx } = fakePi();
+		const skill = {
+			name: "skill:demo",
+			description: "A demo skill",
+			source: "skill",
+			sourceInfo: { path: "/u/.pi/agent/skills/demo/SKILL.md", source: "auto", scope: "user", origin: "top-level" },
+		};
+		pi.getCommands = () => [skill];
+		assert.deepEqual(await executeHostCommand({ type: "get_commands" }, pi, ctx), { commands: [skill] });
+	});
 });
 
 describe("bridge extension", () => {

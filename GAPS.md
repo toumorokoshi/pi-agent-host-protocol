@@ -35,6 +35,16 @@ Known issues and features not yet implemented.
 - **Lost on restart:** resumability is kept in memory only. After a host restart, a turn reloaded from history that ended in an error cannot be resumed; send a new message instead.
 - **Usage:** the resumed run's token usage replaces the turn's usage rather than adding to it.
 
+## Skills and prompt templates
+
+- **No refresh on `/reload`:** the list is read once per pi process. Skills added later, or reloaded in a pi terminal with `/reload`, appear only when pi next starts for that session.
+- **Sessions from history** show no customizations until their first turn or `/` completion, because the list comes from a running pi.
+- **Read-only:** `session/customizationToggled` is rejected (pi cannot disable one skill per session), and clients cannot create skills in the listed directories.
+- **No root-level listing:** `AgentInfo.customizations` is not published, so clients see skills only per session.
+- **Project trust in host sessions:** `pi --mode rpc` skips project skills unless the project is trusted (`/trust` or `defaultProjectTrust: "always"`). The host could offer a setting to pass `--approve`.
+- **Extension commands** are neither listed nor completed.
+- **Not yet tried in VS Code:** how much of the customization list VS Code renders, and whether it shows `/` completions from a remote host, has only been checked against the test client.
+
 ## Terminals and resource watches
 
 - **Terminal lifetime:** a terminal lives until a client calls `disposeTerminal` or the host stops. One whose client disconnects for good is never cleaned up.

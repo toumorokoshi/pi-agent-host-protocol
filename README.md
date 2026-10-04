@@ -103,6 +103,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - **Live terminal sessions:** interactive `pi` processes share their sessions through the bundled pi extension, in both directions. A session is written by only one pi at a time: when a terminal opens a session the host is running, the host hands it over.
 - Read-only `resourceRead`, `resourceList` and `resourceResolve` on host-local `file:` URIs, used for browsing to pick a working directory. Write operations are refused.
 - **Terminals:** `createTerminal` and `disposeTerminal` run your `$SHELL` in a real pty in the requested directory. Keystrokes, resizes, renames, `clear` and exit codes all work, and `RootState.terminals` lists every terminal.
+- **Skills and prompt templates:** each session publishes the skills and prompt templates pi loaded as read-only customizations, and typing `/` at the start of a message completes them. See [docs/skills.md](docs/skills.md).
 - **Resource watches:** `createResourceWatch` watches files and directories with `@parcel/watcher`, recursively or not, with include/exclude globs. A watch is released when its last subscriber unsubscribes. See [docs/terminals-and-watches.md](docs/terminals-and-watches.md).
 
 ### Known limitations
@@ -131,7 +132,7 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 | `listSessions` | supported | Live sessions plus pi sessions on disk, newest first, paginated. |
 | `fetchTurns` | stub | History is always sent in full, so there are never older turns to page in. |
 | `resolveSessionConfig` / `sessionConfigCompletions` | stub | No session config options; models and thinking level are chosen per message instead. |
-| `completions` | stub | Returns no completions. |
+| `completions` | partial | `/` at the start of a user message completes pi's skills and prompt templates. Other text gets no items. |
 | `authenticate` | stub | Accepted; pi manages model credentials itself. |
 | `resourceRead` / `resourceList` / `resourceResolve` | supported | Host-local `file:` URIs only. |
 | `resourceWrite` / `resourceCopy` / `resourceDelete` / `resourceMove` / `resourceMkdir` / `resourceRequest` | refused | `PermissionDenied` (`-32009`). |
@@ -158,7 +159,7 @@ Rejected actions are echoed only to the sending client, with a `rejectionReason`
 | Channel | Actions and notifications |
 |---|---|
 | Root | `root/agentsChanged` (the pi agent and its available models), `root/activeSessionsChanged`, `root/terminalsChanged`; notifications `root/sessionAdded`, `root/sessionRemoved`, `root/sessionSummaryChanged` |
-| Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatUpdated` |
+| Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatUpdated`, `session/customizationsChanged` (pi's skills and prompt templates) |
 | Chat | `chat/turnStarted` (queued messages, and runs started in a pi terminal), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/pendingMessageRemoved` |
 | Terminal | `terminal/data`, `terminal/exited` |
 | Resource watch | `resourceWatch/changed` |
