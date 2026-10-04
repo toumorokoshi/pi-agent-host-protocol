@@ -8,8 +8,17 @@ An [Agent Host Protocol](https://github.com/microsoft/agent-host-protocol) (AHP)
 
 Requirements: Node.js 24 or later, and at least one model provider configured for pi (`~/.pi/agent`). In the default `rpc` mode, the [`pi` CLI](https://github.com/earendil-works/pi) must also be installed and on your `PATH`, or passed with `--pi`.
 
+Run it with npx, no checkout needed (the first run installs and builds it, which takes a little while):
+
 ```sh
-npm install
+npx github:toumorokoshi/pi-agent-host-protocol             # any option below can follow
+npx github:toumorokoshi/pi-agent-host-protocol --debug
+```
+
+Once the package is published to npm, `npx pi-agent-host-protocol` will work too. From a checkout:
+
+```sh
+npm install                  # also builds dist/
 npm start                    # or: node src/bin/pi-agent-host-protocol.ts
 ```
 
