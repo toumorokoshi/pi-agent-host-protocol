@@ -105,7 +105,7 @@ describe("wire events", () => {
 
 describe("rpc backend", () => {
 	test("reports a pi executable that cannot start", async () => {
-		const backend = new RpcBackend({ pi: "/nonexistent/pi-agent-host-test/pi" });
+		const backend = new RpcBackend({ pi: "/nonexistent/pi-agent-host-protocol-test/pi" });
 		await assert.rejects(backend.models(), (error: unknown) => error instanceof PiStartError);
 	});
 

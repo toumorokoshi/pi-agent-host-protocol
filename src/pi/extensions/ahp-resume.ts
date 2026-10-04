@@ -42,7 +42,7 @@ export function resumeRun(pi: Pick<ExtensionAPI, "sendMessage">): void {
 
 export default function ahpResume(pi: ExtensionAPI): void {
 	pi.registerCommand(RESUME_COMMAND, {
-		description: "Continue after a model-server error (used by pi-agent-host)",
+		description: "Continue after a model-server error (used by pi-agent-host-protocol)",
 		handler: async () => resumeRun(pi),
 	});
 	pi.on("context", (event) => {

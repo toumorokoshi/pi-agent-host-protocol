@@ -5,14 +5,14 @@ import { bridgeSocketPath } from "../bridge/protocol.ts";
 import { createLogger, LOG_LEVELS, type Logger, parseLogLevel } from "../core/logger.ts";
 import { AgentHost } from "../host/agent-host.ts";
 import { BridgeServer, HostAlreadyRunningError } from "../host/bridges.ts";
-import { loadSettings, saveSettings, settingsPath } from "../host/settings.ts";
+import { loadSettings, migrateSettings, saveSettings, settingsPath } from "../host/settings.ts";
 import { PI_MODES, type PiBackend, type PiMode, parsePiMode } from "../pi/agent.ts";
 import { EmbeddedBackend } from "../pi/embedded-backend.ts";
 import { RpcBackend } from "../pi/rpc-backend.ts";
 import { PiStartError } from "../pi/rpc-process.ts";
 import { listen } from "../transport/websocket.ts";
 
-const HELP = `Usage: pi-agent-host [options]
+const HELP = `Usage: pi-agent-host-protocol [options]
 
 Serves pi sessions to Agent Host Protocol clients (e.g. the VS Code Agents window).
 
@@ -21,9 +21,9 @@ Options:
   --port <port>      Port to listen on (default from settings; a free port on first run)
   --no-token         Disable the connection token for this run
   --cwd <dir>        Default working directory offered to clients (default: current directory)
-  --log-level <lvl>  Log level: ${LOG_LEVELS.join(", ")} (default: info, or $PI_AGENT_HOST_LOG_LEVEL)
+  --log-level <lvl>  Log level: ${LOG_LEVELS.join(", ")} (default: info, or $PI_AGENT_HOST_PROTOCOL_LOG_LEVEL)
   --debug            Shorthand for --log-level debug (logs every session interaction)
-  --pi-mode <mode>   How to run pi: ${PI_MODES.join(" or ")} (default: rpc, or $PI_AGENT_HOST_PI_MODE)
+  --pi-mode <mode>   How to run pi: ${PI_MODES.join(" or ")} (default: rpc, or $PI_AGENT_HOST_PROTOCOL_PI_MODE)
                      rpc runs each session in its own \`pi --mode rpc\` process;
                      embedded runs pi's SDK inside this process
   --pi <path>        The pi executable for rpc mode (default: pi on PATH)
@@ -62,18 +62,26 @@ async function main(): Promise<void> {
 	}
 
 	const logger = createLogger(
-		values.debug ? "debug" : parseLogLevel(values["log-level"] ?? process.env.PI_AGENT_HOST_LOG_LEVEL ?? "info"),
+		values.debug
+			? "debug"
+			: parseLogLevel(values["log-level"] ?? process.env.PI_AGENT_HOST_PROTOCOL_LOG_LEVEL ?? "info"),
 	);
+	// Only the default location has a predecessor; an explicit directory is used as is.
+	if (!process.env.PI_AGENT_HOST_PROTOCOL_DIR && (await migrateSettings())) {
+		logger.info("settings copied from ~/.pi/agent-host (the project's previous name)");
+	}
 	const { settings, created } = await loadSettings();
 	const host = values.host ?? settings.host;
 	const port = values.port !== undefined ? Number.parseInt(values.port, 10) : settings.port;
 	if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`Invalid port: ${values.port}`);
 	const token = values["no-token"] ? undefined : (settings.token ?? undefined);
 
-	// Marks this process so the pi-agent-host extension stays inactive inside it.
-	process.env.PI_AGENT_HOST_DAEMON = "1";
+	// Marks this process so the pi-agent-host-protocol extension stays inactive inside it.
+	process.env.PI_AGENT_HOST_PROTOCOL_DAEMON = "1";
 
-	const piMode = parsePiMode(values["pi-mode"] ?? process.env.PI_AGENT_HOST_PI_MODE ?? settings.piMode ?? "rpc");
+	const piMode = parsePiMode(
+		values["pi-mode"] ?? process.env.PI_AGENT_HOST_PROTOCOL_PI_MODE ?? settings.piMode ?? "rpc",
+	);
 	const backend = await createBackend(piMode, values.pi ?? settings.pi, logger);
 	logger.info("pi backend", { mode: piMode });
 	const agentHost = new AgentHost({
@@ -109,7 +117,7 @@ async function main(): Promise<void> {
 		logger.warn("could not load models", { error: error instanceof Error ? error.message : String(error) });
 	});
 
-	console.log(`pi-agent-host listening on ${listener.url}`);
+	console.log(`pi-agent-host-protocol listening on ${listener.url}`);
 	if (token === undefined && host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
 		logger.warn("listening beyond localhost without a connection token");
 	}

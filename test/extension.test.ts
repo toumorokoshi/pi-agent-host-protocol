@@ -109,11 +109,11 @@ describe("bridge commands", () => {
 describe("bridge extension", () => {
 	test("stays inactive inside the host's own pi processes", () => {
 		const { pi, calls } = fakePi();
-		process.env.PI_AGENT_HOST_DAEMON = "1";
+		process.env.PI_AGENT_HOST_PROTOCOL_DAEMON = "1";
 		try {
 			piAgentHostBridge(pi);
 		} finally {
-			delete process.env.PI_AGENT_HOST_DAEMON;
+			delete process.env.PI_AGENT_HOST_PROTOCOL_DAEMON;
 		}
 		assert.deepEqual(calls, []);
 	});
@@ -156,7 +156,7 @@ describe("bridge extension", () => {
 	});
 
 	test("starts a host when none is running and shows its URL once", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-autostart-"));
+		const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-autostart-"));
 		const socketPath = join(dir, "host.sock");
 		let server: BridgeServer | undefined;
 		let starts = 0;

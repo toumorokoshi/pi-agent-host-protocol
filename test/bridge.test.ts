@@ -136,7 +136,7 @@ describe("bridge socket", () => {
 	const handler = { attachLive: async () => {} };
 
 	test("a second host on the same socket reports the one already running", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-sock-"));
+		const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-sock-"));
 		const path = join(dir, "host.sock");
 		const first = await BridgeServer.listen(path, handler, silentLogger);
 		try {
@@ -151,7 +151,7 @@ describe("bridge socket", () => {
 	});
 
 	test("replaces the socket of a host that died without cleaning up", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-sock-"));
+		const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-sock-"));
 		const path = join(dir, "host.sock");
 		const child = spawn(process.execPath, [
 			"-e",

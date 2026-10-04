@@ -76,10 +76,10 @@ export class BridgeClient {
 	}
 
 	status(): string {
-		if (!this.#enabled) return "pi-agent-host: sharing is off for this pi (/ahp on to share).";
-		if (!this.#attached) return "pi-agent-host: not connected (/ahp start to start the host).";
+		if (!this.#enabled) return "pi-agent-host-protocol: sharing is off for this pi (/ahp on to share).";
+		if (!this.#attached) return "pi-agent-host-protocol: not connected (/ahp start to start the host).";
 		const url = this.#url ? `\nAdd to VS Code (Agents: Add Remote Agent Host…): ${this.#url}` : "";
-		return `pi-agent-host: sharing session ${this.#attached}.${url}`;
+		return `pi-agent-host-protocol: sharing session ${this.#attached}.${url}`;
 	}
 
 	async close(): Promise<void> {
@@ -112,13 +112,13 @@ export class BridgeClient {
 			if (this.#startedHost && !this.#urlShown && result.url) {
 				this.#urlShown = true;
 				ctx.ui.notify(
-					`pi-agent-host started. Add this URL to VS Code once (Agents: Add Remote Agent Host…):\n${result.url}`,
+					`pi-agent-host-protocol started. Add this URL to VS Code once (Agents: Add Remote Agent Host…):\n${result.url}`,
 					"info",
 				);
 			}
 		} catch (error) {
 			if (this.#attached === sessionId) this.#attached = undefined;
-			ctx.ui.notify(`pi-agent-host: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			ctx.ui.notify(`pi-agent-host-protocol: ${error instanceof Error ? error.message : String(error)}`, "warning");
 		}
 	}
 
@@ -204,7 +204,7 @@ function openChannel(path: string): Promise<JsonlChannel | undefined> {
 		socket.on("data", (chunk: string) => channel.push(chunk));
 		socket.once("connect", () => {
 			socket.on("error", () => {});
-			socket.once("close", () => channel.end(new Error("pi-agent-host disconnected")));
+			socket.once("close", () => channel.end(new Error("pi-agent-host-protocol disconnected")));
 			resolve(channel);
 		});
 		socket.once("error", () => resolve(undefined));
@@ -215,7 +215,7 @@ function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const CLIENT_KEY = Symbol.for("pi-agent-host.bridge-client");
+const CLIENT_KEY = Symbol.for("pi-agent-host-protocol.bridge-client");
 
 /** The process-wide client, shared by every instance of the extension (pi recreates them on reload). */
 export function bridgeClient(): BridgeClient {

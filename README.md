@@ -1,4 +1,4 @@
-# pi-agent-host
+# pi-agent-host-protocol
 
 An [Agent Host Protocol](https://github.com/microsoft/agent-host-protocol) (AHP) server for the [pi coding agent](https://github.com/earendil-works/pi). It lets the VS Code Agents window, and other AHP clients, create, list, resume and drive pi sessions over WebSocket.
 
@@ -10,13 +10,13 @@ Requirements: Node.js 24 or later, and at least one model provider configured fo
 
 ```sh
 npm install
-npm start                    # or: node src/bin/pi-agent-host.ts
+npm start                    # or: node src/bin/pi-agent-host-protocol.ts
 ```
 
-On first run the host creates `~/.pi/agent-host/settings.json` with a free port and a random connection token. Then it prints the URL to connect to:
+On first run the host creates `~/.pi/agent-host-protocol/settings.json` with a free port and a random connection token. Then it prints the URL to connect to:
 
 ```
-pi-agent-host listening on ws://127.0.0.1:63877?tkn=…
+pi-agent-host-protocol listening on ws://127.0.0.1:63877?tkn=…
 ```
 
 | Option | Default | Description |
@@ -25,9 +25,9 @@ pi-agent-host listening on ws://127.0.0.1:63877?tkn=…
 | `--port <port>` | from settings | Port to listen on |
 | `--no-token` | off | Disable the connection token for this run |
 | `--cwd <dir>` | current directory | Default working directory offered to clients |
-| `--log-level <level>` | `info` (or `$PI_AGENT_HOST_LOG_LEVEL`) | `error`, `warn`, `info` or `debug` |
+| `--log-level <level>` | `info` (or `$PI_AGENT_HOST_PROTOCOL_LOG_LEVEL`) | `error`, `warn`, `info` or `debug` |
 | `--debug` | off | Shorthand for `--log-level debug`: logs every session interaction |
-| `--pi-mode <mode>` | from settings, else `rpc` (or `$PI_AGENT_HOST_PI_MODE`) | `rpc` runs each session in its own `pi --mode rpc` process; `embedded` runs pi's SDK inside the host |
+| `--pi-mode <mode>` | from settings, else `rpc` (or `$PI_AGENT_HOST_PROTOCOL_PI_MODE`) | `rpc` runs each session in its own `pi --mode rpc` process; `embedded` runs pi's SDK inside the host |
 | `--pi <path>` | from settings, else `pi` on `PATH` | The `pi` executable used in `rpc` mode |
 | `--no-bridge` | off | Don't accept sessions from interactive `pi` processes |
 
@@ -44,7 +44,9 @@ Logs go to stderr. At the default level they show client connections and handsha
 
 Both modes share the same session files, so you can switch between them. Settings can also hold `"piMode"` and `"pi"`. See [specs/pi-backends.md](specs/pi-backends.md).
 
-`PI_AGENT_HOST_DIR` overrides the settings directory and must be an absolute path. To disable the token permanently, set `"token": null` in the settings file. Keep the token enabled whenever the listener can be reached from beyond localhost.
+The project used to be called `pi-agent-host`. On first start, settings from `~/.pi/agent-host/settings.json` are copied to `~/.pi/agent-host-protocol/`, so a URL already added to VS Code keeps working.
+
+`PI_AGENT_HOST_PROTOCOL_DIR` overrides the settings directory and must be an absolute path. To disable the token permanently, set `"token": null` in the settings file. Keep the token enabled whenever the listener can be reached from beyond localhost.
 
 ### Connecting from VS Code
 
@@ -68,12 +70,12 @@ This package is also a pi package. Its extension shares the session of every int
 
 ```sh
 npm install && npm run build
-pi install /path/to/pi-ahp       # once published: pi install npm:pi-agent-host
+pi install /path/to/pi-ahp       # once published: pi install npm:pi-agent-host-protocol
 ```
 
 Then start `pi` as usual:
 
-- If no host is running, the extension starts one in the background (output in `~/.pi/agent-host/host.log`). It shows the URL to add to VS Code **once**; the URL stays the same afterwards. `/ahp status` shows it again.
+- If no host is running, the extension starts one in the background (output in `~/.pi/agent-host-protocol/host.log`). It shows the URL to add to VS Code **once**; the URL stays the same afterwards. `/ahp status` shows it again.
 - The session appears in the Agents window with its history. Prompts typed in the terminal stream into VS Code; prompts, steering and cancel from VS Code run in the terminal.
 - `/ahp off` stops sharing this session, and `/ahp on` shares it again.
 - When you quit `pi`, the session stays in VS Code and continues in a `pi` started by the host.
@@ -159,7 +161,7 @@ Not used: changesets, MCP, annotations, automations, canvases, input requests (e
 - **Protocol state** (`src/core/state-store.ts`) uses the official reducers from `@microsoft/agent-host-protocol`, so host state is exactly what clients rebuild. Every action gets a host-wide `serverSeq` and is kept in a replay buffer for `reconnect`.
 - **URIs** (`src/core/uris.ts`): VS Code addresses sessions as `<provider>:/<id>` and derives chat URIs as `ahp-chat://default/<base64url(sessionUri)>`. It does not use the URIs the host publishes. So this host publishes exactly those shapes, and also accepts the spec's `ahp-session:/` and `ahp-chat:/` forms. No per-connection URI rewriting is needed.
 - **Connections** (`src/host/connection.ts`) process messages in order, except `ping`. A subscription's snapshot is taken, registered and sent in the same tick, so no action can slip in between.
-- **Live sessions**: the pi extension in `src/extension/` connects to `src/host/bridges.ts` over a unix socket (`~/.pi/agent-host/host.sock`, which is also the single-instance lock). It speaks pi's own RPC command and event protocol (`src/pi/rpc-channel.ts`), so the host drives a terminal session with the same `RpcAgent` it uses for its own `pi --mode rpc` children. `PiSession` turns runs started outside the host into turns. See [specs/live-tui-sessions.md](specs/live-tui-sessions.md).
+- **Live sessions**: the pi extension in `src/extension/` connects to `src/host/bridges.ts` over a unix socket (`~/.pi/agent-host-protocol/host.sock`, which is also the single-instance lock). It speaks pi's own RPC command and event protocol (`src/pi/rpc-channel.ts`), so the host drives a terminal session with the same `RpcAgent` it uses for its own `pi --mode rpc` children. `PiSession` turns runs started outside the host into turns. See [specs/live-tui-sessions.md](specs/live-tui-sessions.md).
 - **pi binding**: `src/pi/pi-session.ts` maps one AHP session to one pi agent through the `PiAgent` / `PiBackend` shim in `src/pi/agent.ts`. Two backends implement it: `src/pi/rpc-backend.ts` (a `pi --mode rpc` child per session) and `src/pi/embedded-backend.ts` (pi's SDK in-process). `src/pi/turn-mapper.ts` turns pi's event stream into chat actions. `src/pi/history.ts` rebuilds turns from session files.
 
 ## Development

@@ -68,7 +68,7 @@ export function defaultShell(env: NodeJS.ProcessEnv = process.env, platform = pr
 export function shellEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const [key, value] of Object.entries(env)) {
-		if (value !== undefined && key !== "PI_AGENT_HOST_DAEMON") out[key] = value;
+		if (value !== undefined && key !== "PI_AGENT_HOST_PROTOCOL_DAEMON") out[key] = value;
 	}
 	out.TERM = "xterm-256color";
 	return out;

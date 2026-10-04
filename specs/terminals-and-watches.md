@@ -21,7 +21,7 @@ Terminal and resource-watch channels are **exact-URI channels**. They are addres
   - `trimContent(content, max)` keeps the newest `max` characters.
   - `terminalInfo` builds catalogue entries.
   - `defaultShell(env, platform)` picks the shell.
-  - `shellEnv(env)` sets `TERM` and drops `PI_AGENT_HOST_DAEMON`, so a `pi` started inside the terminal doesn't think it is the host process.
+  - `shellEnv(env)` sets `TERM` and drops `PI_AGENT_HOST_PROTOCOL_DAEMON`, so a `pi` started inside the terminal doesn't think it is the host process.
 - **`TerminalService` (stateful):**
   - `create` validates the URI is unused and `cwd` is a local directory, spawns the pty, registers the channel and publishes `root/terminalsChanged`.
   - pty output is coalesced for 5 ms, then dispatched as one `terminal/data`.

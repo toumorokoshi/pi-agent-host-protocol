@@ -11,12 +11,12 @@ pi sessions open in terminals show up in the VS Code Agents window while they ru
 Decisions (2026-10-03):
 - Every interactive `pi` with the extension installed shares its session **automatically**. `/ahp off` detaches one session.
 - If no host is running, the extension **starts one detached**, and it keeps running after the TUI exits.
-- The extension ships **in the `pi-agent-host` npm package**, so one `pi install npm:pi-agent-host` provides both.
+- The extension ships **in the `pi-agent-host-protocol` npm package**, so one `pi install npm:pi-agent-host-protocol` provides both.
 
 ## Architecture
 
 ```
-VS Code ──ws──▶ pi-agent-host (daemon)
+VS Code ──ws──▶ pi-agent-host-protocol (daemon)
                  ├─ RpcBackend: `pi --mode rpc` child per host-created session   (milestone 1)
                  └─ BridgeRegistry ◀── unix socket ── bridge extension in pi TUI #1
                                    ◀── unix socket ── bridge extension in pi TUI #2
@@ -39,7 +39,7 @@ The host can therefore drive a TUI session with the existing `RpcAgent`, `TurnMa
 
 ### 2. Bridge protocol (`src/bridge/protocol.ts`)
 
-Socket: `<agent-host dir>/host.sock`, in the `0700` settings directory (`~/.pi/agent-host`, or `$PI_AGENT_HOST_DIR`).
+Socket: `<agent-host dir>/host.sock`, in the `0700` settings directory (`~/.pi/agent-host-protocol`, or `$PI_AGENT_HOST_PROTOCOL_DIR`).
 
 Bridge → host:
 - `{type:"attach", protocol:1, pid, sessionId, sessionFile, cwd, name?, isStreaming}`: sent on connect, and again after each session switch.
@@ -56,7 +56,7 @@ A protocol version mismatch is rejected with a `response` error, and the bridge 
 
 ### 3. Bridge extension (`src/extension/index.ts`)
 
-- **Activation:** only when `ctx.mode === "tui"` and `PI_AGENT_HOST_DAEMON` is unset. That excludes the host's own `pi --mode rpc` children, which inherit the variable. AHP terminals strip it, so a `pi` started in a VS Code terminal does bridge.
+- **Activation:** only when `ctx.mode === "tui"` and `PI_AGENT_HOST_PROTOCOL_DAEMON` is unset. That excludes the host's own `pi --mode rpc` children, which inherit the variable. AHP terminals strip it, so a `pi` started in a VS Code terminal does bridge.
 - **Reloads:** the socket lives on `globalThis`, and each extension instance rebinds it to the newest `pi`/`ctx`. pi replaces the extension runtime on `/reload`, which makes the old objects stale. Cleanup must be idempotent.
 - **Lifecycle:**
   - `session_start` → `attach`;
@@ -74,8 +74,8 @@ A protocol version mismatch is rejected with a `response` error, and the bridge 
   | `get_branch` | `ctx.sessionManager.getBranch()` |
 
 - **Resume:** reuses `src/pi/extensions/ahp-resume.ts` (the `/ahp-resume` command and the `omitResumedErrors` context filter), so `chat/turnResume` works on TUI sessions too.
-- **Auto-start:** if connecting fails with `ENOENT`/`ECONNREFUSED`, spawn `process.execPath <package>/dist/bin/pi-agent-host.js`:
-  - detached, with output to `~/.pi/agent-host/host.log`;
+- **Auto-start:** if connecting fails with `ENOENT`/`ECONNREFUSED`, spawn `process.execPath <package>/dist/bin/pi-agent-host-protocol.js`:
+  - detached, with output to `~/.pi/agent-host-protocol/host.log`;
   - then retry with backoff for up to about 5 s.
 
   The bin is resolved relative to the extension file, so a `pi install` alone is enough and no global npm install is needed. If the daemon goes away later, reconnect with backoff.
@@ -102,14 +102,14 @@ A protocol version mismatch is rejected with a `response` error, and the bridge 
 - **Busy TUI:** the reducer already rejects `chat/turnStarted` while a turn is active, so VS Code queues instead (`chat/pendingMessageSet`). The existing queue then starts it after `agent_settled`.
 - **Listing:** live sessions are listed like others, and while attached their summary status reflects the TUI's activity. AHP has no "live" flag. If we want to show it, the title can be suffixed (decide during implementation).
 - **CLI and daemon:**
-  - `pi-agent-host` listens on the socket unless `--no-bridge` is given.
+  - `pi-agent-host-protocol` listens on the socket unless `--no-bridge` is given.
   - A second daemon that finds a live socket exits 0, which handles the race when two TUIs auto-start at once.
   - A stale socket file is removed when nothing answers on it.
 
 ### 5. Packaging
 
 - `package.json`: `"pi": { "extensions": ["./dist/extension/index.js"] }`. The bin stays.
-- README install: `pi install npm:pi-agent-host`, then start `pi`. The first auto-start shows the URL to paste into VS Code; `/ahp status` shows it again later.
+- README install: `pi install npm:pi-agent-host-protocol`, then start `pi`. The first auto-start shows the URL to paste into VS Code; `/ahp status` shows it again later.
 
 ## Steps (each one a PR)
 

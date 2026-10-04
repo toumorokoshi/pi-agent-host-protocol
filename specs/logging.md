@@ -33,7 +33,7 @@ Operators need to see when clients such as VS Code connect, and, when debugging,
 
 - `--log-level <error|warn|info|debug>`
 - `--debug`, an alias for `--log-level debug`
-- The `PI_AGENT_HOST_LOG_LEVEL` environment variable sets the default. The order of precedence is `--debug`, then `--log-level`, then the environment variable, then `info`.
+- The `PI_AGENT_HOST_PROTOCOL_LOG_LEVEL` environment variable sets the default. The order of precedence is `--debug`, then `--log-level`, then the environment variable, then `info`.
 
 ## Tests
 

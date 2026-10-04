@@ -81,7 +81,7 @@ export class RpcAgent implements PiAgent {
 	}
 
 	async resume(): Promise<void> {
-		if (!this.#canResume) throw new Error("pi did not load the pi-agent-host resume extension");
+		if (!this.#canResume) throw new Error("pi did not load the pi-agent-host-protocol resume extension");
 		// The command itself is "handled"; the run it triggers starts right after.
 		await this.#runUntilSettled({ type: "prompt", message: `/${RESUME_COMMAND}` }, true);
 	}

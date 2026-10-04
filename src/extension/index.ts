@@ -1,5 +1,5 @@
 /**
- * pi-agent-host's pi extension: shares the session of every interactive pi
+ * pi-agent-host-protocol's pi extension: shares the session of every interactive pi
  * with the host, so the VS Code Agents window can follow and drive it. See
  * specs/live-tui-sessions.md.
  */
@@ -23,7 +23,7 @@ const USAGE = "Usage: /ahp [status|on|off|start]";
 
 export default function piAgentHostBridge(pi: ExtensionAPI): void {
 	// Inside the host's own `pi --mode rpc` children (which inherit this), stay out of the way.
-	if (process.env.PI_AGENT_HOST_DAEMON) return;
+	if (process.env.PI_AGENT_HOST_PROTOCOL_DAEMON) return;
 	ahpResume(pi);
 	const client = bridgeClient();
 
@@ -40,7 +40,7 @@ export default function piAgentHostBridge(pi: ExtensionAPI): void {
 	}
 
 	pi.registerCommand("ahp", {
-		description: "Share this session with VS Code through pi-agent-host: /ahp [status|on|off|start]",
+		description: "Share this session with VS Code through pi-agent-host-protocol: /ahp [status|on|off|start]",
 		handler: async (args, ctx) => {
 			switch (args.trim() || "status") {
 				case "status":

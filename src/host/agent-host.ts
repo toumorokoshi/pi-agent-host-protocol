@@ -294,7 +294,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		const result: InitializeResult = {
 			protocolVersion: version,
 			serverSeq: this.store.serverSeq,
-			serverInfo: { name: "pi-agent-host", version: this.#serverVersion },
+			serverInfo: { name: "pi-agent-host-protocol", version: this.#serverVersion },
 			snapshots,
 			defaultDirectory: fileUri(this.#defaultDirectory),
 		};

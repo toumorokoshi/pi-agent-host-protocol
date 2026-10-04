@@ -55,7 +55,7 @@ describe("turns started outside the host", () => {
 	let client: TestClient;
 
 	before(async () => {
-		dir = await mkdtemp(join(tmpdir(), "pi-agent-host-external-"));
+		dir = await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-external-"));
 		backend = new FakeBackend(dir);
 		host = new AgentHost({ backend, defaultDirectory: dir });
 		listener = await listen(host, { host: "127.0.0.1", port: 0, token: undefined });

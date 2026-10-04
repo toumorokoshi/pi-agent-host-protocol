@@ -48,7 +48,8 @@ export class BridgeServer {
 			await listenOn(server, path);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
-			if (await isListening(path)) throw new HostAlreadyRunningError(`A pi-agent-host is already running (${path})`);
+			if (await isListening(path))
+				throw new HostAlreadyRunningError(`A pi-agent-host-protocol is already running (${path})`);
 			await unlink(path);
 			await listenOn(server, path);
 		}
@@ -100,7 +101,7 @@ export class BridgeServer {
 					const info = record as unknown as AttachRequest;
 					if (info.protocol !== BRIDGE_PROTOCOL) {
 						channel.respond(record, {
-							error: `pi-agent-host speaks bridge protocol ${BRIDGE_PROTOCOL}, but this extension speaks ${info.protocol}. Update both.`,
+							error: `pi-agent-host-protocol speaks bridge protocol ${BRIDGE_PROTOCOL}, but this extension speaks ${info.protocol}. Update both.`,
 						});
 						return;
 					}

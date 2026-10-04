@@ -1,6 +1,6 @@
 # Logging
 
-`pi-agent-host` writes its log to **stderr**, one line per event. The connection URL is still printed to stdout, so it can be captured on its own.
+`pi-agent-host-protocol` writes its log to **stderr**, one line per event. The connection URL is still printed to stdout, so it can be captured on its own.
 
 ```
 2026-10-03T20:09:24.974Z INFO  client connected client=127.0.0.1:65484
@@ -13,11 +13,11 @@
 |---|---|
 | `--log-level <level>` | One of `error`, `warn`, `info` (default) or `debug` |
 | `--debug` | Shorthand for `--log-level debug` |
-| `PI_AGENT_HOST_LOG_LEVEL=<level>` | Default level when no flag is given |
+| `PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=<level>` | Default level when no flag is given |
 
 ```sh
-pi-agent-host --debug
-PI_AGENT_HOST_LOG_LEVEL=debug pi-agent-host
+pi-agent-host-protocol --debug
+PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 ```
 
 ## What is logged

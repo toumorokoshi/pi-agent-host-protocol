@@ -10,8 +10,8 @@ The host can run pi in either of two modes, chosen at startup:
 
 | Source | Example |
 |---|---|
-| `--pi-mode <rpc\|embedded>` | `pi-agent-host --pi-mode embedded` |
-| `$PI_AGENT_HOST_PI_MODE` | `PI_AGENT_HOST_PI_MODE=embedded pi-agent-host` |
+| `--pi-mode <rpc\|embedded>` | `pi-agent-host-protocol --pi-mode embedded` |
+| `$PI_AGENT_HOST_PROTOCOL_PI_MODE` | `PI_AGENT_HOST_PROTOCOL_PI_MODE=embedded pi-agent-host-protocol` |
 | `piMode` in `settings.json` | `"piMode": "embedded"` |
 | default | `rpc` |
 

@@ -70,7 +70,7 @@ export async function startHost(
 	options: { token?: string; dir?: string; logger?: Logger; mode?: PiMode; bridge?: boolean } = {},
 ): Promise<TestHost> {
 	const mode = options.mode ?? "rpc";
-	const dir = options.dir ?? (await mkdtemp(join(tmpdir(), "pi-agent-host-test-")));
+	const dir = options.dir ?? (await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-test-")));
 	const cwd = join(dir, "workspace");
 	await mkdir(cwd, { recursive: true });
 	const started = mode === "rpc" ? await startRpcBackend(dir, cwd, options.logger) : await startEmbeddedBackend(dir);
@@ -164,7 +164,7 @@ async function startRpcBackend(dir: string, cwd: string, logger: Logger | undefi
 		agentDir,
 		sessionDir: join(dir, "sessions"),
 		args: ["-e", FAUX_EXTENSION, "--provider", "faux", "--model", "faux-1"],
-		env: { PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_AGENT_HOST_FAUX_URL: `http://127.0.0.1:${port}/` },
+		env: { PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_AGENT_HOST_PROTOCOL_FAUX_URL: `http://127.0.0.1:${port}/` },
 		cwd,
 		logger,
 	});

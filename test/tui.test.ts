@@ -16,7 +16,7 @@ function screenText(output: string): string {
 
 /** Starts an interactive pi in a pseudo-terminal, with the bridge extension and the faux model. */
 function startTui(host: TestHost): { pty: IPty; output: () => string } {
-	const { PI_AGENT_HOST_DAEMON: _daemon, ...env } = process.env;
+	const { PI_AGENT_HOST_PROTOCOL_DAEMON: _daemon, ...env } = process.env;
 	let output = "";
 	const pty = spawn(
 		process.execPath,
@@ -31,10 +31,10 @@ function startTui(host: TestHost): { pty: IPty; output: () => string } {
 				HOME: host.dir,
 				PI_CODING_AGENT_DIR: join(host.dir, "agent"),
 				PI_CODING_AGENT_SESSION_DIR: join(host.dir, "sessions"),
-				PI_AGENT_HOST_DIR: host.dir,
+				PI_AGENT_HOST_PROTOCOL_DIR: host.dir,
 				PI_OFFLINE: "1",
 				PI_SKIP_VERSION_CHECK: "1",
-				PI_AGENT_HOST_FAUX_URL: host.fauxUrl!,
+				PI_AGENT_HOST_PROTOCOL_FAUX_URL: host.fauxUrl!,
 			},
 		},
 	);

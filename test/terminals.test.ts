@@ -23,7 +23,7 @@ describe("terminal helpers", () => {
 	});
 
 	test("shellEnv sets TERM and drops the host marker", () => {
-		const env = shellEnv({ PATH: "/bin", PI_AGENT_HOST_DAEMON: "1", EMPTY: undefined });
+		const env = shellEnv({ PATH: "/bin", PI_AGENT_HOST_PROTOCOL_DAEMON: "1", EMPTY: undefined });
 		assert.deepEqual(env, { PATH: "/bin", TERM: "xterm-256color" });
 	});
 

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { type PiMode, parsePiMode } from "../pi/agent.ts";
@@ -17,12 +17,40 @@ export interface HostSettings {
 }
 
 export function settingsPath(): string {
-	const dir = process.env.PI_AGENT_HOST_DIR;
-	if (dir && !isAbsolute(dir)) throw new Error("PI_AGENT_HOST_DIR must be an absolute path");
-	return join(dir ?? join(homedir(), ".pi", "agent-host"), "settings.json");
+	const dir = process.env.PI_AGENT_HOST_PROTOCOL_DIR;
+	if (dir && !isAbsolute(dir)) throw new Error("PI_AGENT_HOST_PROTOCOL_DIR must be an absolute path");
+	return join(dir ?? join(homedir(), ".pi", "agent-host-protocol"), "settings.json");
 }
 
-/** Reads `~/.pi/agent-host/settings.json`, creating it with a random token on first run. */
+/** Where settings lived before the project was renamed from `pi-agent-host`. */
+export function legacySettingsPath(): string {
+	return join(homedir(), ".pi", "agent-host", "settings.json");
+}
+
+/**
+ * Copies the settings of the project's old name (`~/.pi/agent-host`) to the
+ * new location if there are none there yet, so the port and token, and
+ * therefore the URL already added to VS Code, stay the same. Returns whether
+ * it copied.
+ */
+export async function migrateSettings(from = legacySettingsPath(), to = settingsPath()): Promise<boolean> {
+	try {
+		await readFile(to);
+		return false;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	try {
+		await mkdir(dirname(to), { recursive: true, mode: 0o700 });
+		await copyFile(from, to);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+/** Reads `~/.pi/agent-host-protocol/settings.json`, creating it with a random token on first run. */
 export async function loadSettings(path = settingsPath()): Promise<{ settings: HostSettings; created: boolean }> {
 	try {
 		const raw = JSON.parse(await readFile(path, "utf8")) as Partial<HostSettings>;

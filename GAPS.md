@@ -47,7 +47,7 @@ Known issues and features not yet implemented.
 ## Live TUI sessions (milestone 2)
 
 - **Not yet tried against a real VS Code window**, only against the test client and a real `pi` TUI in a pty.
-- **Not published:** `pi install npm:pi-agent-host` does not work until the package is published under a final name. Install from a built checkout.
+- **Not published:** `pi install npm:pi-agent-host-protocol` does not work until the package is published to npm. Install from a built checkout.
 - **Mid-run attach:** when a TUI attaches while a run is streaming, the host picks up from that run's next user or assistant message. Earlier output of that run is missing until the session is reloaded.
 - **Steering typed in the terminal** during a run appears as a new turn, because each user message opens a turn.
 - **Two writers, briefly:** if a terminal opens a session while the host's own `pi` is mid-run, both can write to the file until that run ends.
@@ -64,4 +64,4 @@ Known issues and features not yet implemented.
 
 ## Tooling
 
-- The npm name `pi-agent-host` is a placeholder (`pi-ahp` is taken).
+- **Not published:** the package is named `pi-agent-host-protocol` (free on npm as of 2026-10-04; `pi-ahp` is taken) but has not been published. The GitHub repository is still `pi-ahp`.
