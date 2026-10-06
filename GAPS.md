@@ -27,6 +27,7 @@ Known issues and features not yet implemented.
 - **Dialog dismissal is untested:** no test drives an extension that opens a dialog in an RPC child.
 - **Model list cache (rpc):** models are cached for 30 s, so a provider added in pi shows up after that.
 - **Session title of a running rpc session** is read from the session file only when the session is loaded. A rename made inside pi (for example by an extension) is not reflected until the host reloads the session.
+- **Agent directory not detected (rpc):** the host does not ask the `pi` executable which agent directory it uses. If the installed `pi` defaults to a different directory than `~/.pi/agent` (for example a build with `userConfigDir: ".av-pi"`), pass `--agent-dir`, or saved sessions vanish from the list after a restart.
 - **Version skew (rpc):** the host is tested against the pi bundled in `node_modules`. An installed `pi` with a different RPC protocol version is not detected.
 
 ## Resuming errored turns

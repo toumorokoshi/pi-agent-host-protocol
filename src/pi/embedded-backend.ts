@@ -11,7 +11,7 @@ import type { PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 
 export interface EmbeddedBackendOptions {
-	/** pi agent directory (defaults to pi's own, `~/.pi/agent`). */
+	/** pi agent directory (defaults to pi's own: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`). */
 	agentDir?: string;
 	/** Session directory override; by default pi groups sessions per cwd under the agent dir. */
 	sessionDir?: string;

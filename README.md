@@ -38,6 +38,8 @@ pi-agent-host-protocol listening on ws://127.0.0.1:63877?tkn=…
 | `--debug` | off | Shorthand for `--log-level debug`: logs every session interaction |
 | `--pi-mode <mode>` | from settings, else `rpc` (or `$PI_AGENT_HOST_PROTOCOL_PI_MODE`) | `rpc` runs each session in its own `pi --mode rpc` process; `embedded` runs pi's SDK inside the host |
 | `--pi <path>` | from settings, else `pi` on `PATH` | The `pi` executable used in `rpc` mode |
+| `--agent-dir <dir>` | from settings, else `$PI_CODING_AGENT_DIR`, else `~/.pi/agent` | pi's agent directory. Sessions are listed from `<dir>/sessions` |
+| `--session-dir <dir>` | from settings, else `$PI_CODING_AGENT_SESSION_DIR` | A flat session directory, like pi's own `--session-dir` |
 | `--no-bridge` | off | Don't accept sessions from interactive `pi` processes |
 
 Logs go to stderr. At the default level they show client connections and handshakes; `--debug` adds every request, client action, turn and tool call. See [docs/logging.md](docs/logging.md).
@@ -51,7 +53,19 @@ Logs go to stderr. At the default level they show client connections and handsha
 | A crashing session | Ends its own turn with an error; the next turn starts a new `pi` | Can take the host down |
 | First turn of a session | Waits for `pi` to start (about 0.7 s) | Immediate |
 
-Both modes share the same session files, so you can switch between them. Settings can also hold `"piMode"` and `"pi"`. See [specs/pi-backends.md](specs/pi-backends.md).
+Both modes share the same session files, so you can switch between them. Settings can also hold `"piMode"`, `"pi"`, `"agentDir"` and `"sessionDir"`. See [specs/pi-backends.md](specs/pi-backends.md).
+
+### Where sessions are stored
+
+The host and the `pi` it runs must agree on pi's agent directory, or sessions are written to one place and listed from another. This happens when the host runs as a service without your shell's environment, or when your `pi` build uses a different directory than `~/.pi/agent`. For example, a distribution with `userConfigDir: ".av-pi"` stores sessions under `~/.av-pi/agent/sessions`.
+
+Pass the directory your `pi` uses:
+
+```sh
+pi-agent-host-protocol --pi /opt/av-pi/bin/pi --agent-dir ~/.av-pi/agent
+```
+
+The host sets `PI_CODING_AGENT_DIR` (and `PI_CODING_AGENT_SESSION_DIR` for `--session-dir`) on itself. Its session listing and every `pi` it starts then use the same store. Use `--session-dir` only if you run `pi` with a flat `--session-dir` too. pi groups sessions per working directory only under the agent directory.
 
 The project used to be called `pi-agent-host`. On first start, settings from `~/.pi/agent-host/settings.json` are copied to `~/.pi/agent-host-protocol/`, so a URL already added to VS Code keeps working.
 

@@ -5,6 +5,7 @@ import { bridgeSocketPath } from "../bridge/protocol.ts";
 import { createLogger, LOG_LEVELS, type Logger, parseLogLevel } from "../core/logger.ts";
 import { AgentHost } from "../host/agent-host.ts";
 import { BridgeServer, HostAlreadyRunningError } from "../host/bridges.ts";
+import { type PiDirs, piDirsEnv, resolvePiDirs } from "../host/pi-dirs.ts";
 import { loadSettings, migrateSettings, saveSettings, settingsPath } from "../host/settings.ts";
 import { PI_MODES, type PiBackend, type PiMode, parsePiMode } from "../pi/agent.ts";
 import { EmbeddedBackend } from "../pi/embedded-backend.ts";
@@ -27,6 +28,11 @@ Options:
                      rpc runs each session in its own \`pi --mode rpc\` process;
                      embedded runs pi's SDK inside this process
   --pi <path>        The pi executable for rpc mode (default: pi on PATH)
+  --agent-dir <dir>  pi's agent directory; sessions are read from <dir>/sessions
+                     (default from settings, or $PI_CODING_AGENT_DIR, else ~/.pi/agent)
+  --session-dir <dir>
+                     A flat session directory, like pi's --session-dir
+                     (default from settings, or $PI_CODING_AGENT_SESSION_DIR)
   --no-bridge        Do not accept live sessions from interactive pi processes
   -h, --help         Show this help
 
@@ -52,6 +58,8 @@ async function main(): Promise<void> {
 			debug: { type: "boolean", default: false },
 			"pi-mode": { type: "string" },
 			pi: { type: "string" },
+			"agent-dir": { type: "string" },
+			"session-dir": { type: "string" },
 			"no-bridge": { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
 		},
@@ -79,10 +87,21 @@ async function main(): Promise<void> {
 	// Marks this process so the pi-agent-host-protocol extension stays inactive inside it.
 	process.env.PI_AGENT_HOST_PROTOCOL_DAEMON = "1";
 
+	// pi's SDK in this process (session listing, models) and every pi child read
+	// these from the environment, so setting them here keeps all of them on the
+	// same session store.
+	const piDirs = resolvePiDirs(
+		{ agentDir: values["agent-dir"], sessionDir: values["session-dir"] },
+		settings,
+		process.env,
+	);
+	Object.assign(process.env, piDirsEnv(piDirs));
+	logger.info("pi directories", { ...piDirs });
+
 	const piMode = parsePiMode(
 		values["pi-mode"] ?? process.env.PI_AGENT_HOST_PROTOCOL_PI_MODE ?? settings.piMode ?? "rpc",
 	);
-	const backend = await createBackend(piMode, values.pi ?? settings.pi, logger);
+	const backend = await createBackend(piMode, values.pi ?? settings.pi, piDirs, logger);
 	logger.info("pi backend", { mode: piMode });
 	const agentHost = new AgentHost({
 		backend,
@@ -132,9 +151,9 @@ async function main(): Promise<void> {
 	process.once("SIGTERM", shutdown);
 }
 
-async function createBackend(mode: PiMode, pi: string | undefined, logger: Logger): Promise<PiBackend> {
-	if (mode === "embedded") return EmbeddedBackend.create();
-	return new RpcBackend({ pi, logger });
+async function createBackend(mode: PiMode, pi: string | undefined, dirs: PiDirs, logger: Logger): Promise<PiBackend> {
+	if (mode === "embedded") return EmbeddedBackend.create(dirs);
+	return new RpcBackend({ pi, ...dirs, logger });
 }
 
 main().catch((error) => {

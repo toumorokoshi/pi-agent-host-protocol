@@ -14,6 +14,10 @@ export interface HostSettings {
 	piMode?: PiMode;
 	/** The `pi` executable for RPC mode (`pi` on `PATH` when unset). */
 	pi?: string;
+	/** pi's agent directory (see `--agent-dir`). */
+	agentDir?: string;
+	/** A flat pi session directory (see `--session-dir`). */
+	sessionDir?: string;
 }
 
 export function settingsPath(): string {
@@ -61,6 +65,8 @@ export async function loadSettings(path = settingsPath()): Promise<{ settings: H
 				token: raw.token === null ? null : typeof raw.token === "string" ? raw.token : randomToken(),
 				...(typeof raw.piMode === "string" ? { piMode: parsePiMode(raw.piMode) } : {}),
 				...(typeof raw.pi === "string" ? { pi: raw.pi } : {}),
+				...(typeof raw.agentDir === "string" ? { agentDir: raw.agentDir } : {}),
+				...(typeof raw.sessionDir === "string" ? { sessionDir: raw.sessionDir } : {}),
 			},
 			created: false,
 		};

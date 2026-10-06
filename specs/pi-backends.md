@@ -55,6 +55,14 @@ This is the previous behaviour, moved behind the shim. `createAgentSession` runs
 
 Records are split on LF only, because JSON strings may contain U+2028/U+2029.
 
+### pi's directories (`src/host/pi-dirs.ts`)
+
+The host reads sessions with pi's SDK (`SessionManager.listAll`) and, in rpc mode, writes them through a `pi` child. Both must resolve the same agent directory. The SDK bundled with the host defaults to `~/.pi/agent`, but an installed `pi` may default elsewhere (its `piConfig.userConfigDir`), and a service manager may start the host without `PI_CODING_AGENT_DIR`. A mismatch makes every saved session disappear from `listSessions` once the host restarts and loses the sessions it had in memory.
+
+`--agent-dir` and `--session-dir` (or `agentDir` / `sessionDir` in settings, or pi's own `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`) pick them, in that order. `~` is expanded. The host exports the result as pi's environment variables on its own process, so the in-process SDK, model listing and every child agree. The backends also get the values: `--session-dir` is passed to children and used for `SessionManager` calls.
+
+`--session-dir` is flat, the same as pi's flag: sessions from every working directory share one folder. `--agent-dir` keeps pi's per-cwd grouping under `<agentDir>/sessions`.
+
 ## Mode differences
 
 | | rpc (default) | embedded |
