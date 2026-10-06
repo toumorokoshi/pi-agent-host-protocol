@@ -298,9 +298,23 @@ export class PiSession {
 
 	/** Side effects of an accepted client session action (already applied to state). */
 	onSessionAction(action: StateAction): void {
-		if (action.type === ActionType.SessionTitleChanged) {
-			this.#saveTitle(action.title);
-			this.#ctx.summaryChanged(this.id, { title: action.title });
+		switch (action.type) {
+			case ActionType.SessionTitleChanged:
+				this.#saveTitle(action.title);
+				this.#ctx.summaryChanged(this.id, { title: action.title });
+				break;
+			// The default chat's status is the session's summary status (it carries
+			// the turn's activity bits), so session-level flags are mirrored onto it.
+			case ActionType.SessionIsReadChanged:
+				this.#dispatchChat({ type: ActionType.ChatIsReadChanged, isRead: action.isRead });
+				this.#syncSummary();
+				break;
+			case ActionType.SessionIsArchivedChanged:
+				this.#dispatchChat({ type: ActionType.ChatIsArchivedChanged, isArchived: action.isArchived });
+				this.#syncSummary();
+				break;
+			default:
+				break;
 		}
 	}
 
@@ -632,6 +646,7 @@ export class PiSession {
 			chat: chatUri(this.id),
 			changes: { status: chat.status, modifiedAt: chat.modifiedAt },
 		});
+		this.#ctx.store.setSessionStatus(this.id, chat.status);
 		this.#ctx.summaryChanged(this.id, { status: chat.status, modifiedAt: chat.modifiedAt });
 	}
 

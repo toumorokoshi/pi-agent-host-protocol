@@ -108,6 +108,18 @@ export class StateStore {
 		if (this.#exact.get(uri)?.kind === "terminal") this.#exact.set(uri, { kind: "terminal", state });
 	}
 
+	/**
+	 * Mirrors the default chat's summary status into the session state outside
+	 * the action stream. AHP has no action that sets `SessionState.status`, and
+	 * the session reducer only toggles its read/archived flags, so without this
+	 * session snapshots would never show a running turn. Live clients follow
+	 * the status through `root/sessionSummaryChanged` and `session/chatUpdated`.
+	 */
+	setSessionStatus(id: string, status: SessionState["status"]): void {
+		const state = this.#sessions.get(id);
+		if (state && state.status !== status) this.#sessions.set(id, { ...state, status });
+	}
+
 	snapshot(channel: string): Snapshot | undefined {
 		const fromSeq = this.#seq;
 		const exact = this.#exact.get(channel);

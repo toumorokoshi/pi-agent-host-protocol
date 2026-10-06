@@ -560,10 +560,6 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				if (!ACCEPTED_SESSION_ACTIONS.has(action.type)) return unsupported;
 				this.store.dispatch(sessionUri(ref.sessionId), action, origin);
 				session.onSessionAction(action);
-				if (action.type === ActionType.SessionIsReadChanged || action.type === ActionType.SessionIsArchivedChanged) {
-					const status = this.store.session(ref.sessionId)?.status ?? SessionStatus.Idle;
-					this.summaryChanged(ref.sessionId, { status });
-				}
 				return { kind: "accepted" };
 			}
 			case "chat": {

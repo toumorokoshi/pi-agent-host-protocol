@@ -17,6 +17,7 @@ Known issues and features not yet implemented.
 - **pi extension dialogs** resolve with their defaults in host sessions.
 - **File edits** are shown as text results, not file diffs.
 - **Not implemented:** changesets, MCP and automations.
+- **No `activity` text:** sessions report `InProgress` while busy, but never set `chat/activityChanged` / `SessionSummary.activity` (e.g. "Running bash…"), so the session list shows no description of the current step.
 - **Read-only file access:** `resourceWrite` and the other write operations are refused.
 
 ## pi modes

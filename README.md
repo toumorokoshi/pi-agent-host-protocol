@@ -96,6 +96,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - Handshake: negotiates protocol 0.9.x (what VS Code currently speaks) or 1.x, answers `ping` at any time, and supports `reconnect` with action replay.
 - Creating sessions in any local working directory. Session ids are reused as pi session ids, so the files land in pi's normal session store and also appear in `pi --resume`.
 - Streaming turns: text, reasoning, tool calls and their results, token usage and errors.
+- **Busy indicator:** a session's summary status shows `InProgress` for as long as a turn runs, including after the client marks the session read or archived.
 - Cancellation, steering messages, and queued messages that run once the current turn ends.
 - **Resumable errors:** when the model server fails mid-turn (for example llama.cpp's `Failed to parse input` on a malformed tool call), the turn ends with a resumable error. The client can then continue the same turn without sending a new message, and the failed reply is left out of the model's context, the same as pi's own auto-retry.
 - `listSessions` covers existing pi sessions on disk. Subscribing to one loads its history; new turns continue the same session file.

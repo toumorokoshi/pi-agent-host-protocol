@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { SessionStatus } from "@microsoft/agent-host-protocol";
 import { newSession, PI_MODES, startHost, startTurn, TestClient, type TestHost, vscodeChatUri } from "./helpers.ts";
 
 describe("handshake", () => {
@@ -145,6 +146,42 @@ for (const mode of PI_MODES) {
 			host.faux.setResponses([fauxAssistantMessage("Back again.")]);
 			const next = startTurn(client, chat, "Are you there?");
 			await client.waitFor((m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === next);
+		});
+
+		test("keeps reporting a running turn after the client marks the session read", async () => {
+			const { session, chat } = await newSession(host, client);
+			const { promise: modelCalled, resolve: onModelCall } = Promise.withResolvers<void>();
+			const { promise: release, resolve: onRelease } = Promise.withResolvers<void>();
+			host.faux.setResponses([
+				async () => {
+					onModelCall();
+					await release;
+					return fauxAssistantMessage("Done.");
+				},
+			]);
+			const turnId = startTurn(client, chat, "Work for a while");
+			await modelCalled;
+
+			try {
+				// VS Code marks a session read when the user opens it or navigates away.
+				client.dispatch(session, { type: "session/isReadChanged", isRead: true });
+				const summary = await client.waitFor(
+					(m) =>
+						m.method === "root/sessionSummaryChanged" &&
+						m.params.session === session &&
+						((m.params.changes.status ?? 0) & SessionStatus.IsRead) !== 0,
+				);
+				const status = summary.params.changes.status as number;
+				assert.ok(status & SessionStatus.InProgress, `summary status ${status} keeps InProgress`);
+				const running = await client.request("subscribe", { channel: session });
+				assert.ok(running.snapshot.state.status & SessionStatus.InProgress, "session snapshot keeps InProgress");
+				assert.ok(client.chats.get(chat)!.status! & SessionStatus.IsRead, "chat is marked read too");
+			} finally {
+				onRelease();
+			}
+			await client.waitFor((m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turnId);
+			const snapshot = await client.request("subscribe", { channel: session });
+			assert.equal((snapshot.snapshot.state.status as number) & SessionStatus.InProgress, 0);
 		});
 
 		test("rejects invalid client actions back to the sender", async () => {
