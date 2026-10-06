@@ -114,7 +114,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - Handshake: negotiates protocol 0.9.x (what VS Code currently speaks) or 1.x, answers `ping` at any time, and supports `reconnect` with action replay.
 - Creating sessions in any local working directory. Session ids are reused as pi session ids, so the files land in pi's normal session store and also appear in `pi --resume`.
 - Streaming turns: text, reasoning, tool calls and their results, token usage and errors.
-- **Busy indicator:** a session's summary status shows `InProgress` for as long as a turn runs, including after the client marks the session read or archived.
+- **Busy indicator:** a session's summary status shows `InProgress` for as long as a turn runs, including after the client marks the session read or archived. Its `activity` text says what the turn is doing (`Thinking`, `Responding`, `Running npm test`, `Reading src/a.ts`). See [specs/session-activity.md](specs/session-activity.md).
 - Cancellation, steering messages, and queued messages that run once the current turn ends.
 - **Resumable errors:** when the model server fails mid-turn (for example llama.cpp's `Failed to parse input` on a malformed tool call), the turn ends with a resumable error. The client can then continue the same turn without sending a new message, and the failed reply is left out of the model's context, the same as pi's own auto-retry.
 - `listSessions` covers existing pi sessions on disk. Subscribing to one loads its history; new turns continue the same session file.
@@ -178,8 +178,8 @@ Rejected actions are echoed only to the sending client, with a `rejectionReason`
 | Channel | Actions and notifications |
 |---|---|
 | Root | `root/agentsChanged` (the pi agent and its available models), `root/activeSessionsChanged`, `root/terminalsChanged`; notifications `root/sessionAdded`, `root/sessionRemoved`, `root/sessionSummaryChanged` |
-| Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatUpdated`, `session/customizationsChanged` (pi's skills and prompt templates) |
-| Chat | `chat/turnStarted` (queued messages, and runs started in a pi terminal), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/pendingMessageRemoved` |
+| Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatUpdated`, `session/activityChanged`, `session/customizationsChanged` (pi's skills and prompt templates) |
+| Chat | `chat/turnStarted` (queued messages, and runs started in a pi terminal), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/activityChanged`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/pendingMessageRemoved` |
 | Terminal | `terminal/data`, `terminal/exited` |
 | Resource watch | `resourceWatch/changed` |
 

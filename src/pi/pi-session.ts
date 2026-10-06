@@ -39,12 +39,19 @@ export interface SessionHostContext {
 	readonly backend: PiBackend;
 	readonly logger: Logger;
 	/** Publishes `root/sessionSummaryChanged` for this session. */
-	summaryChanged(sessionId: string, changes: Partial<SessionSummary>): void;
+	summaryChanged(sessionId: string, changes: SessionSummaryChanges): void;
 	/** Called whenever a session starts or stops running a turn. */
 	activityChanged(): void;
 	/** The current time in ms (replaced in tests). */
 	now(): number;
 }
+
+/**
+ * Fields of a `root/sessionSummaryChanged` notification. Omitted fields are
+ * unchanged on the client, so `activity: null` is how a cleared activity is
+ * sent (VS Code treats it as an explicit clear).
+ */
+export type SessionSummaryChanges = Omit<Partial<SessionSummary>, "activity"> & { activity?: string | null };
 
 interface ActiveTurn {
 	readonly id: string;
@@ -216,6 +223,7 @@ export class PiSession {
 			createdAt: this.createdAt,
 			modifiedAt: chat?.modifiedAt ?? this.createdAt,
 			workingDirectories: [fileUri(this.cwd)],
+			...(chat?.activity ? { activity: chat.activity } : {}),
 		};
 	}
 
@@ -704,6 +712,10 @@ export class PiSession {
 	#syncSummary(): void {
 		const chat = this.#ctx.store.chat(this.id);
 		if (!chat) return;
+		// A turn the client cancelled drops the mapper's final actions, so its activity is cleared here.
+		if (!chat.activeTurn && chat.activity !== undefined) {
+			this.#dispatchChat({ type: ActionType.ChatActivityChanged, activity: undefined });
+		}
 		this.#dispatchSession({
 			type: ActionType.SessionChatUpdated,
 			chat: chatUri(this.id),
@@ -713,8 +725,23 @@ export class PiSession {
 		this.#ctx.summaryChanged(this.id, { status: chat.status, modifiedAt: chat.modifiedAt });
 	}
 
+	/**
+	 * Mirrors the chat's activity text into the session state, the session's
+	 * chat catalog and the root summary, as AHP's summary aggregation rules ask.
+	 * `null` in the root summary explicitly clears the text (omitting the field
+	 * would leave the client's cached value in place).
+	 */
+	#syncActivity(): void {
+		const activity = this.#ctx.store.chat(this.id)?.activity;
+		if (this.#ctx.store.session(this.id)?.activity === activity) return;
+		this.#dispatchSession({ type: ActionType.SessionActivityChanged, activity });
+		this.#dispatchSession({ type: ActionType.SessionChatUpdated, chat: chatUri(this.id), changes: { activity } });
+		this.#ctx.summaryChanged(this.id, { activity: activity ?? null });
+	}
+
 	#dispatchChat(action: ChatAction): void {
 		this.#ctx.store.dispatch(chatUri(this.id), action);
+		if (action.type === ActionType.ChatActivityChanged) this.#syncActivity();
 	}
 
 	#dispatchSession(action: StateAction): void {

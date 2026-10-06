@@ -6,7 +6,7 @@ import {
 	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
 import type { PiEvent } from "./agent.ts";
-import { firstText, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
+import { firstText, toolActivity, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
 
 /**
  * How a run ended. A `resumable` error came from the model provider (the run
@@ -18,6 +18,10 @@ export type TurnOutcome =
 	| { kind: "complete" }
 	| { kind: "cancelled" }
 	| { kind: "error"; message: string; resumable?: boolean };
+
+/** Activity text while the model produces output that is not a tool call. */
+export const ACTIVITY_THINKING = "Thinking";
+export const ACTIVITY_RESPONDING = "Responding";
 
 interface AssistantLike {
 	role: "assistant";
@@ -66,6 +70,9 @@ export class TurnMapper {
 	readonly #usage = { input: 0, output: 0, cacheRead: 0, seen: false, model: undefined as string | undefined };
 	#lastError: string | undefined;
 	#aborted = false;
+	#activity: string | undefined;
+	/** Activity text of tool calls that have not completed yet, in start order. */
+	readonly #runningTools = new Map<string, string>();
 
 	readonly #attempt: number;
 
@@ -86,7 +93,10 @@ export class TurnMapper {
 	handle(event: PiEvent): void {
 		switch (event.type) {
 			case "message_start":
-				if (asAssistant(event.message)) this.#messageIndex++;
+				if (asAssistant(event.message)) {
+					this.#messageIndex++;
+					this.#setActivity(ACTIVITY_THINKING);
+				}
 				break;
 			case "message_update":
 				this.#onAssistantEvent(event.assistantMessageEvent);
@@ -126,6 +136,9 @@ export class TurnMapper {
 						...(event.isError ? { error: { message: firstText(content) ?? "Tool failed" } } : {}),
 					},
 				});
+				this.#runningTools.delete(event.toolCallId);
+				// Another tool may still be running; otherwise the model is called again with the results.
+				this.#setActivity([...this.#runningTools.values()].at(-1) ?? ACTIVITY_THINKING);
 				break;
 			}
 			default:
@@ -135,6 +148,7 @@ export class TurnMapper {
 
 	/** Emits the actions that end the turn. */
 	finish(outcome: TurnOutcome, durationMs: number): void {
+		this.#setActivity(undefined);
 		if (this.#usage.seen) {
 			const usage: UsageInfo = {
 				inputTokens: this.#usage.input,
@@ -190,6 +204,7 @@ export class TurnMapper {
 		switch (event.type) {
 			case "text_start":
 				this.#ensurePart(ResponsePartKind.Markdown, this.#partId(event.contentIndex));
+				this.#setActivity(ACTIVITY_RESPONDING);
 				break;
 			case "text_delta": {
 				const id = this.#partId(event.contentIndex);
@@ -200,6 +215,7 @@ export class TurnMapper {
 			}
 			case "thinking_start":
 				this.#ensurePart(ResponsePartKind.Reasoning, this.#partId(event.contentIndex));
+				this.#setActivity(ACTIVITY_THINKING);
 				break;
 			case "thinking_delta": {
 				const id = this.#partId(event.contentIndex);
@@ -213,6 +229,8 @@ export class TurnMapper {
 				if (tool) {
 					this.#streamingTools.set(`${this.#messageIndex}:${event.contentIndex}`, tool.id);
 					this.#startTool(tool.id, tool.name);
+					// Arguments are still streaming, so only the generic label is known.
+					this.#trackTool(tool.id, toolActivity(tool.name, undefined));
 				}
 				break;
 			}
@@ -252,6 +270,18 @@ export class TurnMapper {
 		}
 	}
 
+	/** Emits `chat/activityChanged` when the description of the current step changes. */
+	#setActivity(activity: string | undefined): void {
+		if (activity === this.#activity) return;
+		this.#activity = activity;
+		this.#emit({ type: ActionType.ChatActivityChanged, activity });
+	}
+
+	#trackTool(toolCallId: string, activity: string): void {
+		this.#runningTools.set(toolCallId, activity);
+		this.#setActivity(activity);
+	}
+
 	#startTool(toolCallId: string, toolName: string): void {
 		if (this.#startedTools.has(toolCallId)) return;
 		this.#startedTools.add(toolCallId);
@@ -268,6 +298,7 @@ export class TurnMapper {
 		if (this.#readyTools.has(toolCallId)) return;
 		this.#readyTools.add(toolCallId);
 		this.#toolArgs.set(toolCallId, args as Record<string, unknown> | undefined);
+		this.#trackTool(toolCallId, toolActivity(toolName, args as Record<string, unknown> | undefined));
 		const labels = toolLabels(toolName, args as Record<string, unknown> | undefined);
 		this.#emit({
 			type: ActionType.ChatToolCallReady,

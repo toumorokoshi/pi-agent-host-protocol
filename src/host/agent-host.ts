@@ -35,7 +35,7 @@ import type { PiBackend } from "../pi/agent.ts";
 import { COMPLETION_TRIGGER_CHARACTERS } from "../pi/customizations.ts";
 import { sweepInterval } from "../pi/idle.ts";
 import { toSessionModelInfo } from "../pi/models.ts";
-import { PiSession, type SessionHostContext } from "../pi/pi-session.ts";
+import { PiSession, type SessionHostContext, type SessionSummaryChanges } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
@@ -249,7 +249,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 
 	// ── SessionHostContext ────────────────────────────────────────────────
 
-	summaryChanged(sessionId: string, changes: Partial<SessionSummary>): void {
+	summaryChanged(sessionId: string, changes: SessionSummaryChanges): void {
 		this.#notifyRoot("root/sessionSummaryChanged", { session: sessionUri(sessionId), changes });
 	}
 

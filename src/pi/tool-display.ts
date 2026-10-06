@@ -64,6 +64,14 @@ export function toolLabels(toolName: string, args: Args): ToolLabels {
 	}
 }
 
+/**
+ * Plain-text form of a tool's invocation label, for activity text. Clients
+ * render activity as plain text, so the inline-code backticks are dropped.
+ */
+export function toolActivity(toolName: string, args: Args): string {
+	return toolLabels(toolName, args).invocation.replaceAll("`", "");
+}
+
 export function toolInputText(args: unknown): string {
 	try {
 		return JSON.stringify(args ?? {});

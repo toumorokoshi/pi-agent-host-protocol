@@ -184,6 +184,34 @@ for (const mode of PI_MODES) {
 			assert.equal((snapshot.snapshot.state.status as number) & SessionStatus.InProgress, 0);
 		});
 
+		test("reports what a running turn is doing as the session activity", async () => {
+			const { session, chat } = await newSession(host, client);
+			await writeFile(join(host.cwd, "activity.txt"), "busy\n");
+			host.faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("read", { path: "activity.txt" }, { id: "call-activity" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("Done."),
+			]);
+			const turnId = startTurn(client, chat, "Read the file");
+			const reading = await client.waitFor(
+				(m) =>
+					m.method === "root/sessionSummaryChanged" &&
+					m.params.session === session &&
+					m.params.changes.activity === "Reading activity.txt",
+			);
+			assert.ok(reading);
+			await client.waitFor((m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turnId);
+			await client.waitFor(
+				(m) =>
+					m.method === "root/sessionSummaryChanged" &&
+					m.params.session === session &&
+					m.params.changes.activity === null,
+			);
+			assert.equal(client.chats.get(chat)!.activity, undefined);
+			assert.equal(client.sessions.get(session)!.activity, undefined);
+		});
+
 		test("rejects invalid client actions back to the sender", async () => {
 			const { chat } = await newSession(host, client);
 			const seq = client.dispatch(chat, { type: "chat/turnCancelled", turnId: "nope", duration: 0 });
