@@ -30,6 +30,7 @@ import {
 	withSkillFlags,
 } from "./customizations.ts";
 import { turnsFromEntries, userMessageText } from "./history.ts";
+import { type IdleState, suspendBlocker } from "./idle.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import { TurnMapper, type TurnOutcome } from "./turn-mapper.ts";
 
@@ -41,6 +42,8 @@ export interface SessionHostContext {
 	summaryChanged(sessionId: string, changes: Partial<SessionSummary>): void;
 	/** Called whenever a session starts or stops running a turn. */
 	activityChanged(): void;
+	/** The current time in ms (replaced in tests). */
+	now(): number;
 }
 
 interface ActiveTurn {
@@ -93,6 +96,8 @@ export class PiSession {
 	#commands: Promise<readonly UserCommand[]> | undefined;
 	#disposed = false;
 	#hasTurns: boolean;
+	/** When a client or pi last used the session, for stopping idle pi processes. */
+	#lastActivity: number;
 
 	private constructor(
 		ctx: SessionHostContext,
@@ -107,6 +112,7 @@ export class PiSession {
 		this.#sessionManager = sessionManager;
 		this.createdAt = createdAt;
 		this.#hasTurns = false;
+		this.#lastActivity = ctx.now();
 	}
 
 	/** A new, empty session. The pi agent starts immediately; `session/ready` follows. */
@@ -176,6 +182,11 @@ export class PiSession {
 		return this.#hasTurns;
 	}
 
+	/** When a client or pi last used the session (ms since the epoch). */
+	get lastActivity(): number {
+		return this.#lastActivity;
+	}
+
 	get isRunning(): boolean {
 		return this.#turn !== undefined;
 	}
@@ -213,6 +224,7 @@ export class PiSession {
 	 * if the session has none yet, since its commands come from pi.
 	 */
 	async completions(text: string, offset: number): Promise<CompletionItem[]> {
+		this.#touch();
 		if (!this.#commands) await this.#ensureAgent();
 		return slashCompletions((await this.#commands) ?? [], text, offset);
 	}
@@ -267,6 +279,7 @@ export class PiSession {
 
 	/** Side effects of an accepted client chat action (already applied to state). */
 	onChatAction(action: ChatAction): void {
+		this.#touch();
 		switch (action.type) {
 			case ActionType.ChatTurnStarted:
 				this.#runTurn(action.turnId, { kind: "prompt", message: action.message });
@@ -298,6 +311,7 @@ export class PiSession {
 
 	/** Side effects of an accepted client session action (already applied to state). */
 	onSessionAction(action: StateAction): void {
+		this.#touch();
 		switch (action.type) {
 			case ActionType.SessionTitleChanged:
 				this.#saveTitle(action.title);
@@ -348,10 +362,57 @@ export class PiSession {
 			const turn = this.#externalRun;
 			this.#externalRun = undefined;
 			if (turn) this.#finishExternalTurn(turn, { kind: "error", message: "pi closed the session" });
-			if (sessionFile && existsSync(sessionFile)) {
-				this.#sessionManager = this.#ctx.backend.openSessionManager(sessionFile);
-			}
+			this.#reopenSessionFile(sessionFile);
 		});
+	}
+
+	/**
+	 * Re-reads the session file after a pi process that wrote to it let go,
+	 * so direct writes (a rename with no pi running) append to its latest entry.
+	 */
+	#reopenSessionFile(file = this.#sessionManager.getSessionFile()): void {
+		if (file && existsSync(file)) this.#sessionManager = this.#ctx.backend.openSessionManager(file);
+	}
+
+	#touch(): void {
+		this.#lastActivity = this.#ctx.now();
+	}
+
+	/** What the session is doing, for deciding whether its pi process may be stopped. */
+	idleState(agent: PiAgent | undefined): IdleState {
+		const chat = this.#ctx.store.chat(this.id);
+		return {
+			suspendable: agent !== undefined && !agent.closed && agent.backgroundProcesses !== undefined,
+			running: this.#turn !== undefined || this.#externalRun !== undefined || this.#hostRun || !!chat?.activeTurn,
+			pending: !!chat?.steeringMessage || (chat?.queuedMessages?.length ?? 0) > 0,
+			lastActivity: this.#lastActivity,
+		};
+	}
+
+	/**
+	 * Stops the session's pi process if it has been idle since `cutoff` and
+	 * has no background work. The session itself stays: it is still listed,
+	 * its state and subscriptions are unchanged, and the next turn starts a
+	 * new pi on the same session file. Returns whether it stopped pi.
+	 */
+	async suspend(cutoff: number): Promise<boolean> {
+		const pending = this.#agent;
+		const agent = await pending?.catch(() => undefined);
+		if (!agent || this.#agent !== pending || suspendBlocker(this.idleState(agent), cutoff)) return false;
+		const background = await (agent.backgroundProcesses?.() ?? Promise.resolve([])).catch(() => [-1]);
+		if (background.length > 0) {
+			this.#ctx.logger.debug("idle session kept (background processes)", {
+				session: this.id,
+				pids: background.join(","),
+			});
+			return false;
+		}
+		// Re-checked: a turn may have started while the process table was read.
+		if (this.#agent !== pending || suspendBlocker(this.idleState(agent), cutoff)) return false;
+		this.#agent = undefined;
+		await agent.dispose();
+		this.#reopenSessionFile();
+		return true;
 	}
 
 	async dispose(): Promise<void> {
@@ -472,6 +533,7 @@ export class PiSession {
 			this.#turn = undefined;
 			this.#ctx.activityChanged();
 		}
+		this.#touch();
 		this.#syncSummary();
 		this.#consumePending();
 	}
@@ -557,6 +619,7 @@ export class PiSession {
 
 	#finishExternalTurn(turn: ActiveTurn, outcome: TurnOutcome): void {
 		this.#hasTurns = true;
+		this.#touch();
 		if (!turn.cancelledByClient) {
 			turn.mapper.finish(outcome, Date.now() - turn.startedAt);
 			if (outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;

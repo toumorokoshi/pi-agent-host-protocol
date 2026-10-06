@@ -13,15 +13,27 @@ export interface RpcState {
 	isStreaming?: boolean;
 }
 
+export interface RpcAgentOptions {
+	/**
+	 * Set for a `pi --mode rpc` child the host started, which it may stop when
+	 * idle. Resolves with the pids of processes pi started in the background.
+	 */
+	backgroundProcesses?: () => Promise<number[]>;
+}
+
 /** Reads pi's state over `channel` and returns an agent for it. Closes the channel on failure. */
-export async function connectRpcAgent(channel: RpcChannel, logger: Logger): Promise<RpcAgent> {
+export async function connectRpcAgent(
+	channel: RpcChannel,
+	logger: Logger,
+	options: RpcAgentOptions = {},
+): Promise<RpcAgent> {
 	try {
 		const [state, commands] = await Promise.all([
 			channel.request<RpcState>({ type: "get_state" }),
 			channel.request<{ commands: Array<{ name: string }> }>({ type: "get_commands" }),
 		]);
 		const canResume = commands.commands.some((command) => command.name === RESUME_COMMAND);
-		return new RpcAgent(channel, state, canResume, logger);
+		return new RpcAgent(channel, state, canResume, logger, options);
 	} catch (error) {
 		await channel.close();
 		throw error;
@@ -45,9 +57,11 @@ export class RpcAgent implements PiAgent {
 	readonly #settleWaiters = new Set<SettleWaiter>();
 	#model: { provider: string; id: string } | undefined;
 	#thinkingLevel: string | undefined;
+	readonly backgroundProcesses: (() => Promise<number[]>) | undefined;
 
-	constructor(child: RpcChannel, state: RpcState, canResume: boolean, logger: Logger) {
+	constructor(child: RpcChannel, state: RpcState, canResume: boolean, logger: Logger, options: RpcAgentOptions = {}) {
 		this.#child = child;
+		this.backgroundProcesses = options.backgroundProcesses;
 		this.#canResume = canResume;
 		this.#logger = logger;
 		this.#model = state.model && { provider: state.model.provider, id: state.model.id };

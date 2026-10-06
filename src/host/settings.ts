@@ -18,6 +18,8 @@ export interface HostSettings {
 	agentDir?: string;
 	/** A flat pi session directory (see `--session-dir`). */
 	sessionDir?: string;
+	/** Minutes before an idle session's pi process is stopped (see `--idle-timeout`). */
+	idleTimeoutMinutes?: number;
 }
 
 export function settingsPath(): string {
@@ -67,6 +69,7 @@ export async function loadSettings(path = settingsPath()): Promise<{ settings: H
 				...(typeof raw.pi === "string" ? { pi: raw.pi } : {}),
 				...(typeof raw.agentDir === "string" ? { agentDir: raw.agentDir } : {}),
 				...(typeof raw.sessionDir === "string" ? { sessionDir: raw.sessionDir } : {}),
+				...(typeof raw.idleTimeoutMinutes === "number" ? { idleTimeoutMinutes: raw.idleTimeoutMinutes } : {}),
 			},
 			created: false,
 		};

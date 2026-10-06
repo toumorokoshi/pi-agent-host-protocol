@@ -75,7 +75,7 @@ The host reads sessions with pi's SDK (`SessionManager.listAll`) and, in rpc mod
 
 ## Trade-offs
 
-- One Node process per open session costs memory. Children live until the session is disposed or the host stops.
+- One Node process per open session costs memory. Children are stopped after `--idle-timeout` minutes without activity (default 30) and started again by the next turn. See [idle-sessions.md](idle-sessions.md).
 - The resume extension adds a hidden `custom_message` entry (`customType: "ahp-resume"`) to the session file for each resume. History rebuilding already ignores custom messages.
 - Neither mode shares a session with a pi TUI open in a terminal. That is milestone 2.
 

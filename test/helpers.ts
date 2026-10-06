@@ -67,7 +67,15 @@ interface StartedBackend {
 
 /** Starts a host backed by pi's scripted faux model, isolated in a temp directory. */
 export async function startHost(
-	options: { token?: string; dir?: string; logger?: Logger; mode?: PiMode; bridge?: boolean } = {},
+	options: {
+		token?: string;
+		dir?: string;
+		logger?: Logger;
+		mode?: PiMode;
+		bridge?: boolean;
+		idleTimeoutMs?: number;
+		now?: () => number;
+	} = {},
 ): Promise<TestHost> {
 	const mode = options.mode ?? "rpc";
 	const dir = options.dir ?? (await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-test-")));
@@ -79,6 +87,8 @@ export async function startHost(
 		defaultDirectory: cwd,
 		serverVersion: "test",
 		logger: options.logger,
+		idleTimeoutMs: options.idleTimeoutMs,
+		now: options.now,
 	});
 	await host.refreshAgents();
 	const listener: Listener = await listen(host, { host: "127.0.0.1", port: 0, token: options.token });

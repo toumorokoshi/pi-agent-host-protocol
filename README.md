@@ -40,6 +40,7 @@ pi-agent-host-protocol listening on ws://127.0.0.1:63877?tkn=…
 | `--pi <path>` | from settings, else `pi` on `PATH` | The `pi` executable used in `rpc` mode |
 | `--agent-dir <dir>` | from settings, else `$PI_CODING_AGENT_DIR`, else `~/.pi/agent` | pi's agent directory. Sessions are listed from `<dir>/sessions` |
 | `--session-dir <dir>` | from settings, else `$PI_CODING_AGENT_SESSION_DIR` | A flat session directory, like pi's own `--session-dir` |
+| `--idle-timeout <minutes>` | from settings, else `$PI_AGENT_HOST_PROTOCOL_IDLE_TIMEOUT`, else `30` | In `rpc` mode, stop a session's `pi` process after this many minutes without activity. `0` keeps them running |
 | `--no-bridge` | off | Don't accept sessions from interactive `pi` processes |
 
 Logs go to stderr. At the default level they show client connections and handshakes; `--debug` adds every request, client action, turn and tool call. See [docs/logging.md](docs/logging.md).
@@ -52,8 +53,11 @@ Logs go to stderr. At the default level they show client connections and handsha
 | pi version, settings and extensions | Your installed `pi` | The `@earendil-works/pi-coding-agent` bundled with the host |
 | A crashing session | Ends its own turn with an error; the next turn starts a new `pi` | Can take the host down |
 | First turn of a session | Waits for `pi` to start (about 0.7 s) | Immediate |
+| Idle sessions | `pi` is stopped after `--idle-timeout` minutes; the next turn starts it again | Stay in memory |
 
-Both modes share the same session files, so you can switch between them. Settings can also hold `"piMode"`, `"pi"`, `"agentDir"` and `"sessionDir"`. See [specs/pi-backends.md](specs/pi-backends.md).
+Both modes share the same session files, so you can switch between them. Settings can also hold `"piMode"`, `"pi"`, `"agentDir"`, `"sessionDir"` and `"idleTimeoutMinutes"`. See [specs/pi-backends.md](specs/pi-backends.md).
+
+In `rpc` mode an idle `pi` process takes a few hundred MB, so the host stops one after 30 minutes without activity. The session stays listed and its state is unchanged. The next turn starts a new `pi` on the same session file, which costs about 0.7 s. A `pi` that is running a turn, has queued messages, or has started background processes (such as background jobs or subagents) is kept. `pi` sessions open in a terminal are never stopped. See [specs/idle-sessions.md](specs/idle-sessions.md).
 
 ### Where sessions are stored
 

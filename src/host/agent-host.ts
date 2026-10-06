@@ -33,6 +33,7 @@ import {
 } from "../core/uris.ts";
 import type { PiBackend } from "../pi/agent.ts";
 import { COMPLETION_TRIGGER_CHARACTERS } from "../pi/customizations.ts";
+import { sweepInterval } from "../pi/idle.ts";
 import { toSessionModelInfo } from "../pi/models.ts";
 import { PiSession, type SessionHostContext } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
@@ -51,6 +52,13 @@ export interface AgentHostOptions {
 	defaultDirectory: string;
 	serverVersion?: string;
 	logger?: Logger;
+	/**
+	 * Stops a session's `pi --mode rpc` process after this many ms without
+	 * activity (see specs/idle-sessions.md). 0 or unset keeps them running.
+	 */
+	idleTimeoutMs?: number;
+	/** The clock, in ms (tests replace it). */
+	now?: () => number;
 }
 
 type ActionOutcome = { kind: "accepted" } | { kind: "rejected"; reason: string } | { kind: "ignored" };
@@ -103,12 +111,22 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	readonly #watches: ResourceWatchService;
 	#catalog: { at: number; sessions: Promise<SessionInfo[]> } | undefined;
 	#activeSessions = 0;
+	readonly #idleTimeoutMs: number;
+	readonly #idleTimer: NodeJS.Timeout | undefined;
+	#sweeping: Promise<number> | undefined;
+	readonly now: () => number;
 
 	constructor(options: AgentHostOptions) {
 		this.backend = options.backend;
 		this.#defaultDirectory = options.defaultDirectory;
 		this.#serverVersion = options.serverVersion ?? "0.0.0";
 		this.logger = options.logger ?? silentLogger;
+		this.now = options.now ?? Date.now;
+		this.#idleTimeoutMs = options.idleTimeoutMs ?? 0;
+		if (this.#idleTimeoutMs > 0) {
+			this.#idleTimer = setInterval(() => void this.suspendIdleSessions(), sweepInterval(this.#idleTimeoutMs));
+			this.#idleTimer.unref();
+		}
 		this.store = new StateStore({
 			agents: [
 				{
@@ -150,7 +168,43 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		void this.#watches.release((channel) => this.#isSubscribed(channel), connection);
 	}
 
+	/**
+	 * Stops the pi process of every session idle for longer than the idle
+	 * timeout. Sessions stay listed and subscribed; their next turn starts a
+	 * new pi. Returns how many were stopped. Concurrent calls share one sweep.
+	 */
+	suspendIdleSessions(): Promise<number> {
+		if (this.#idleTimeoutMs <= 0) return Promise.resolve(0);
+		this.#sweeping ??= this.#sweep().finally(() => {
+			this.#sweeping = undefined;
+		});
+		return this.#sweeping;
+	}
+
+	async #sweep(): Promise<number> {
+		const cutoff = this.now() - this.#idleTimeoutMs;
+		let stopped = 0;
+		for (const session of [...this.#sessions.values()]) {
+			try {
+				if (!(await session.suspend(cutoff))) continue;
+				stopped++;
+				this.logger.info("idle session suspended", {
+					session: session.id,
+					idleMinutes: Math.round((this.now() - session.lastActivity) / 60_000),
+				});
+			} catch (error) {
+				this.logger.warn("could not suspend idle session", {
+					session: session.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		return stopped;
+	}
+
 	async dispose(): Promise<void> {
+		if (this.#idleTimer) clearInterval(this.#idleTimer);
+		await this.#sweeping?.catch(() => {});
 		for (const connection of this.#connections) connection.close();
 		this.#connections.clear();
 		await Promise.all([...this.#sessions.values()].map((session) => session.dispose()));

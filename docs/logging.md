@@ -24,7 +24,8 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 
 **`info`** (default): connection lifecycle.
 
-- `pi backend`: at startup, the pi mode in use (`rpc` or `embedded`).
+- `pi backend`: at startup, the pi mode in use (`rpc` or `embedded`), and in `rpc` mode `idle timeout` (minutes).
+- `idle session suspended`: the host stopped an idle session's `pi` process (`session`, `idleMinutes`). See [specs/idle-sessions.md](../specs/idle-sessions.md).
 - `live session attached` / `live session detached`: an interactive pi shared or let go of a session (`pid`, `session`, and for detaches the reason).
 - `client connected`: a WebSocket connection was accepted.
 - `client initialized` / `client reconnected`: the handshake finished. Includes the client's name (VS Code reports `vscode-agents-window` or `vscode-editor-window`), its `clientId` and the negotiated protocol version.
@@ -34,7 +35,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 
 - `connection rejected: missing or invalid token`: the URL's `?tkn=` didn't match the settings file.
 - `request failed`: a request returned an error. Includes the method, channel and error message.
-- `request before initialize`, `could not load models`, `could not save session title`, `could not attach live session`
+- `request before initialize`, `could not load models`, `could not save session title`, `could not attach live session`, `could not suspend idle session`
 
 **`debug`**: every interaction with a session.
 
@@ -46,7 +47,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 - `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `queued message started`
 - `terminal created` (shell, cwd, pid), `terminal exited` (exit code), `terminal disposed`
 - `resource watch created` (root, recursive) and `resource watch released`. Watcher failures are logged as `resource watch error` at warn.
-- In `rpc` mode: `pi stderr`, one line per line pi writes to stderr (tagged `session=<id>`, or `purpose=models` for the process that lists models), and `extension dialog dismissed` when a pi extension asks for input that the host cannot show.
+- In `rpc` mode: `idle session kept (background processes)` (with the `pids` pi started since it became ready), `could not read the process table`, `pi stderr`, one line per line pi writes to stderr (tagged `session=<id>`, or `purpose=models` for the process that lists models), and `extension dialog dismissed` when a pi extension asks for input that the host cannot show.
 
 Each line carries `client=<address>` and `clientName=…`, or `session=<id>` and `turn=<id>`, so you can follow one client or one conversation with `grep`.
 

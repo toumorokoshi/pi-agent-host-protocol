@@ -26,12 +26,19 @@ export function spawnCommand(command: string): { file: string; args: string[] } 
 	return SCRIPT_EXTENSIONS.test(command) ? { file: process.execPath, args: [command] } : { file: command, args: [] };
 }
 
+/** A started `pi --mode rpc` child: its pid, and an `RpcChannel` on its stdio. */
+export interface RpcProcess {
+	/** Undefined if the process could not be started (the channel then closes with a `PiStartError`). */
+	readonly pid: number | undefined;
+	readonly channel: JsonlChannel;
+}
+
 /**
- * Starts one `pi --mode rpc` child and returns an `RpcChannel` on its stdio.
+ * Starts one `pi --mode rpc` child.
  * Closing the channel shuts pi down: stdin is closed (pi's orderly
  * shutdown), then SIGTERM and SIGKILL follow if pi does not exit.
  */
-export function spawnRpcProcess(options: RpcProcessOptions): JsonlChannel {
+export function spawnRpcProcess(options: RpcProcessOptions): RpcProcess {
 	const { logger } = options;
 	const logFields = options.logFields ?? {};
 	const { file, args } = spawnCommand(options.command);
@@ -75,7 +82,7 @@ export function spawnRpcProcess(options: RpcProcessOptions): JsonlChannel {
 		const detail = stderr.trim();
 		channel.end(new Error(`pi exited with ${status}${detail ? `: ${detail}` : ""}`));
 	});
-	return channel;
+	return { pid: child.pid, channel };
 }
 
 function delay(ms: number): Promise<void> {

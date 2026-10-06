@@ -22,7 +22,12 @@ Known issues and features not yet implemented.
 
 ## pi modes
 
-- **One process per session (rpc):** every open session keeps a `pi --mode rpc` child until it is disposed or the host stops. Idle children are never stopped early.
+- **Idle sessions (rpc):** see [specs/idle-sessions.md](specs/idle-sessions.md).
+  - Extension state kept only in pi's memory is lost when an idle pi is stopped.
+  - Background work is detected only as child processes pi started after it became ready. Work an extension does inside pi itself (timers, open sockets) is not seen, and such a pi can be stopped.
+  - A helper process an extension starts lazily on the first turn (for example an MCP server started on first use) counts as background work, so that pi is never stopped.
+  - Not tested on Windows (`ps` is used to read the process table; if it fails, nothing is stopped).
+  - Embedded mode keeps idle sessions in memory.
 - **Extension dialogs are not forwarded (rpc):** pi sends them over RPC, but the host dismisses them. They could be mapped to AHP input requests.
 - **Dialog dismissal is untested:** no test drives an extension that opens a dialog in an RPC child.
 - **Model list cache (rpc):** models are cached for 30 s, so a provider added in pi shows up after that.

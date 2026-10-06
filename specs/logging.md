@@ -25,6 +25,7 @@ Operators need to see when clients such as VS Code connect, and, when debugging,
   | Each client action and its outcome | `AgentHost.#dispatchAction` | debug |
   | Session lifecycle | `AgentHost` and `PiSession.initialize` | debug |
   | Turns, tools, retries, steering, queue | `PiSession` | debug |
+  | Idle pi process stopped | `AgentHost.suspendIdleSessions` | info; failures at warn |
 
 - **Action outcomes:** `AgentHost.#applyClientAction` validates and applies an action and returns an outcome: `accepted`, `rejected` with a reason, or `ignored`. `#dispatchAction` is then the single place that logs the outcome and sends any rejection envelope.
 - **Privacy:** prompt text, model output and tool output are never logged. Turn logs record `chars` (prompt length) and the number of attachments instead.

@@ -9,6 +9,7 @@ import { type PiDirs, piDirsEnv, resolvePiDirs } from "../host/pi-dirs.ts";
 import { loadSettings, migrateSettings, saveSettings, settingsPath } from "../host/settings.ts";
 import { PI_MODES, type PiBackend, type PiMode, parsePiMode } from "../pi/agent.ts";
 import { EmbeddedBackend } from "../pi/embedded-backend.ts";
+import { DEFAULT_IDLE_TIMEOUT_MINUTES, parseIdleTimeout } from "../pi/idle.ts";
 import { RpcBackend } from "../pi/rpc-backend.ts";
 import { PiStartError } from "../pi/rpc-process.ts";
 import { listen } from "../transport/websocket.ts";
@@ -33,6 +34,10 @@ Options:
   --session-dir <dir>
                      A flat session directory, like pi's --session-dir
                      (default from settings, or $PI_CODING_AGENT_SESSION_DIR)
+  --idle-timeout <minutes>
+                     Stop a session's pi process (rpc mode) after this many minutes
+                     without activity; 0 keeps them running (default from settings,
+                     or $PI_AGENT_HOST_PROTOCOL_IDLE_TIMEOUT, else ${DEFAULT_IDLE_TIMEOUT_MINUTES})
   --no-bridge        Do not accept live sessions from interactive pi processes
   -h, --help         Show this help
 
@@ -60,6 +65,7 @@ async function main(): Promise<void> {
 			pi: { type: "string" },
 			"agent-dir": { type: "string" },
 			"session-dir": { type: "string" },
+			"idle-timeout": { type: "string" },
 			"no-bridge": { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
 		},
@@ -103,8 +109,16 @@ async function main(): Promise<void> {
 	);
 	const backend = await createBackend(piMode, values.pi ?? settings.pi, piDirs, logger);
 	logger.info("pi backend", { mode: piMode });
+	const idleTimeoutMs = parseIdleTimeout(
+		values["idle-timeout"] ??
+			process.env.PI_AGENT_HOST_PROTOCOL_IDLE_TIMEOUT ??
+			settings.idleTimeoutMinutes ??
+			DEFAULT_IDLE_TIMEOUT_MINUTES,
+	);
+	if (piMode === "rpc") logger.info("idle timeout", { minutes: idleTimeoutMs / 60_000 });
 	const agentHost = new AgentHost({
 		backend,
+		idleTimeoutMs,
 		defaultDirectory: values.cwd ?? process.cwd(),
 		serverVersion: packageVersion(),
 		logger,

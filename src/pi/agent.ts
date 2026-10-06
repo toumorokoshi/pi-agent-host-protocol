@@ -62,6 +62,13 @@ export interface PiAgent {
 	setSessionName(name: string): Promise<void>;
 	/** pi's slash commands: extension commands, prompt templates and skills (`skill:<name>`). */
 	commands(): Promise<readonly SlashCommandInfo[]>;
+	/**
+	 * Set only on agents the host may stop when idle (its own `pi --mode rpc`
+	 * children). Resolves with the pids of processes pi started after it
+	 * became ready, such as background jobs or subagents; while there are
+	 * any, the agent is kept.
+	 */
+	readonly backgroundProcesses?: () => Promise<number[]>;
 	dispose(): Promise<void>;
 }
 
