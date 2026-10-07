@@ -29,6 +29,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 - `live session attached` / `live session detached`: an interactive pi shared or let go of a session (`pid`, `session`, and for detaches the reason).
 - `client connected`: a WebSocket connection was accepted.
 - `client initialized` / `client reconnected`: the handshake finished. Includes the client's name (VS Code reports `vscode-agents-window` or `vscode-editor-window`), its `clientId` and the negotiated protocol version.
+- `reconnect from unknown client; asking it to initialize`: a client this host instance never initialized (usually after a host restart) tried to `reconnect`. It gets `NotFound` and runs `initialize` again, which is expected.
 - `client disconnected`
 
 **`warn`**: things that usually explain why a client can't connect or something failed.

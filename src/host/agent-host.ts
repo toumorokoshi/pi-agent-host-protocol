@@ -364,11 +364,24 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		const clientId = requireString(params.clientId, "clientId");
 		const lastSeen = typeof params.lastSeenServerSeq === "number" ? params.lastSeenServerSeq : -1;
 		const requested = stringArray(params.subscriptions) ?? [ROOT_CHANNEL];
+
+		// A client this host instance never saw (e.g. after a host restart)
+		// must initialize again: its sequence numbers belong to another
+		// instance, and it would otherwise keep the protocol version and
+		// capabilities (such as `completionTriggerCharacters`) of the host it
+		// first initialized with. Clients fall back to `initialize` on NotFound.
+		const knownClient = this.#clientVersions.get(clientId);
+		if (!knownClient) {
+			this.logger.info("reconnect from unknown client; asking it to initialize", {
+				...connection.logFields,
+				clientId,
+			});
+			throw new ProtocolError(AhpErrorCodes.NotFound, `Reconnect client not found: ${clientId}`);
+		}
 		await Promise.all(requested.map((uri) => this.#load(uri).catch(() => undefined)));
 
-		const knownClient = this.#clientVersions.get(clientId);
 		connection.clientId = clientId;
-		connection.protocolVersion = knownClient ?? connection.protocolVersion;
+		connection.protocolVersion = knownClient;
 		connection.initialized = true;
 		this.#clientVersions.set(clientId, connection.protocolVersion);
 		this.logger.info("client reconnected", {
@@ -378,9 +391,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			lastSeenServerSeq: lastSeen,
 		});
 
-		// A client this host instance never saw (e.g. after a host restart)
-		// cannot be replayed: its sequence numbers belong to another instance.
-		const replay = knownClient && lastSeen <= this.store.serverSeq ? this.store.replaySince(lastSeen) : undefined;
+		const replay = lastSeen <= this.store.serverSeq ? this.store.replaySince(lastSeen) : undefined;
 		if (!replay) {
 			const result: ReconnectResult = {
 				type: ReconnectResultType.Snapshot,

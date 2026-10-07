@@ -278,6 +278,24 @@ for (const mode of PI_MODES) {
 			second.close();
 		});
 
+		test("asks an unknown client to initialize instead of reconnecting", async () => {
+			const stranger = await TestClient.connect(host.url);
+			await assert.rejects(
+				stranger.request("reconnect", {
+					clientId: "from-a-previous-host-instance",
+					lastSeenServerSeq: 42,
+					subscriptions: ["ahp-root://"],
+				}),
+				(error: any) => error.code === -32008,
+			);
+			const result = await stranger.request("initialize", {
+				protocolVersions: ["0.9.0"],
+				clientId: "from-a-previous-host-instance",
+			});
+			assert.deepEqual(result.completionTriggerCharacters, ["/"]);
+			stranger.close();
+		});
+
 		test("rejects creating a session that already exists", async () => {
 			const { session } = await newSession(host, client);
 			await assert.rejects(

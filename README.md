@@ -144,7 +144,7 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 |---|---|---|
 | `initialize` | supported | Negotiates protocol 0.9.x or 1.x. Unsupported versions get `-32005` with `supportedVersions`. |
 | `ping` | supported | Answered at any time, including before `initialize`. |
-| `reconnect` | supported | Replays missed actions from a buffer, or sends fresh snapshots (for example after a host restart). |
+| `reconnect` | supported | Replays missed actions from a buffer, or sends fresh snapshots when the gap is too large. A client this host instance never initialized (for example after a host restart) gets `NotFound` (`-32008`), so it runs `initialize` again and picks up the current capabilities. |
 | `subscribe` / `unsubscribe` | supported | Root, session, chat, terminal and resource-watch channels. Subscribing to a saved pi session loads its history. |
 | `createSession` | supported | Accepts any local working directory. The session id becomes the pi session id. |
 | `disposeSession` | partial | Discards empty sessions only. Sessions with history stay listed, and pi session files are never deleted. |

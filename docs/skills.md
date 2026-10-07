@@ -22,3 +22,7 @@ Sessions the host starts run `pi --mode rpc`, which cannot ask whether to trust 
 ## When the list updates
 
 The list is read when pi starts for a session. A session opened from history has no pi yet, so its list appears on the first message or the first `/` completion. Skills added later show up the next time pi starts for that session.
+
+## Troubleshooting: no completions in VS Code
+
+VS Code asks for completions only if the host announced `/` as a trigger character during `initialize`. It keeps that answer across reconnects. Hosts before this fix accepted `reconnect` from clients they had never seen, so a VS Code window that first connected to an older host kept an empty trigger list and never showed suggestions. Current hosts answer such a `reconnect` with `NotFound`, which makes VS Code initialize again. If completions are still missing, reload the VS Code window, or remove and re-add the remote agent host.
