@@ -10,7 +10,7 @@ import type { PiAgent, PiBackend } from "../src/pi/agent.ts";
 import { connectRpcAgent } from "../src/pi/rpc-agent.ts";
 import { type Listener, listen } from "../src/transport/websocket.ts";
 import { FakePi, runEvents } from "./fake-pi.ts";
-import { channelPair, newSession, TestClient } from "./helpers.ts";
+import { channelPair, newSession, startTurn, TestClient } from "./helpers.ts";
 
 /** A backend whose agents are `FakePi`s, so tests can play runs that the host did not start. */
 class FakeBackend implements PiBackend {
@@ -140,6 +140,45 @@ describe("turns started outside the host", () => {
 			["From the TUI", "From VS Code"],
 		);
 		assert.equal(turns[1]!.responseParts.find((part) => part.kind === "markdown")?.content, "Queued reply");
+	});
+
+	test("a steering message sent during a host turn opens its own turn when pi delivers it", async () => {
+		const { chat } = await newSession({ cwd: dir } as never, client);
+		const pi = backend.pis.at(-1)!;
+		pi.manual = true;
+		const first = startTurn(client, chat, "First");
+		await waitUntil(() => pi.commands.some((command) => command.type === "prompt"));
+		const firstRun = runEvents("First", "Working on it");
+		pi.emit(firstRun.slice(0, 5));
+		client.dispatch(chat, {
+			type: "chat/pendingMessageSet",
+			kind: "steering",
+			id: "s1",
+			message: { text: "And then this", origin: { kind: "user" } },
+		});
+		await waitUntil(() => pi.commands.some((command) => command.type === "steer"));
+		assert.equal(pi.commands.find((command) => command.type === "steer")!.message, "And then this");
+		// pi delivers the steering message after the first reply, then answers it in the same run.
+		const seq = lastSeq();
+		pi.emit([firstRun[5]!, ...runEvents("And then this", "Done both").slice(1)]);
+		const steered = await started(chat, seq);
+		assert.equal(steered.params.action.message.text, "And then this");
+		await client.waitFor(
+			(m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === steered.params.action.turnId,
+		);
+		const state = client.chats.get(chat)!;
+		assert.equal(state.steeringMessage, undefined);
+		assert.deepEqual(
+			state.turns.map((turn) => [turn.id === first, turn.message.text, turn.state]),
+			[
+				[true, "First", "complete"],
+				[false, "And then this", "complete"],
+			],
+		);
+		const reply = (index: number) => state.turns[index]!.responseParts.find((part) => part.kind === "markdown");
+		assert.equal(reply(0)?.content, "Working on it");
+		assert.equal(reply(1)?.content, "Done both");
+		assert.equal(state.activeTurn, undefined);
 	});
 });
 

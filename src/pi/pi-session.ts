@@ -93,6 +93,11 @@ export class PiSession {
 	 * run's events are not mistaken for a new run.
 	 */
 	#externalRun: ActiveTurn | undefined;
+	/**
+	 * Steering messages sent to pi during the current host run, oldest first.
+	 * Each becomes its own turn when pi echoes it (see `#promoteSteering`).
+	 */
+	#steered: Message[] = [];
 	/** Agents whose events are observed for runs started outside the host. */
 	readonly #observed = new WeakSet<PiAgent>();
 	/** The turn whose last run ended in a resumable provider error, if any. */
@@ -495,17 +500,28 @@ export class PiSession {
 		this.#lastRun = previous.then(() => this.#execute(turn, run));
 	}
 
-	async #execute(turn: ActiveTurn, run: RunKind): Promise<void> {
-		const { mapper } = turn;
+	async #execute(first: ActiveTurn, run: RunKind): Promise<void> {
+		// A steering message pi delivers mid-run moves the rest of the run to a new turn.
+		let turn = first;
 		let outcome: TurnOutcome = { kind: "cancelled" };
 		let unsubscribe: (() => void) | undefined;
 		try {
 			if (!turn.cancelledByClient) {
 				const agent = await this.#ensureAgent();
 				if (run.kind === "prompt") await this.#applyModel(agent, run.message);
+				// The first user message of a prompt run is the prompt itself; later ones were steered in.
+				let promptSeen = run.kind !== "prompt";
 				unsubscribe = agent.subscribe((event) => {
+					const user = userMessageStarted(event);
+					if (user !== undefined) {
+						if (!promptSeen) promptSeen = true;
+						else if (!turn.cancelledByClient) {
+							turn = this.#promoteSteering(turn, user);
+							return;
+						}
+					}
 					this.#logEvent(turn, event);
-					mapper.handle(event);
+					turn.mapper.handle(event);
 				});
 				this.#ctx.logger.debug(run.kind === "prompt" ? "turn started" : "turn resumed", {
 					session: this.id,
@@ -517,18 +533,19 @@ export class PiSession {
 				this.#hostRun = true;
 				if (run.kind === "prompt") await agent.prompt(promptInput(run.message));
 				else await agent.resume();
-				outcome = mapper.impliedOutcome();
+				outcome = turn.mapper.impliedOutcome();
 			}
 		} catch (error) {
-			outcome = mapper.aborted
+			outcome = turn.mapper.aborted
 				? { kind: "cancelled" }
 				: { kind: "error", message: error instanceof Error ? error.message : String(error) };
 		} finally {
 			this.#hostRun = false;
+			this.#steered = [];
 			unsubscribe?.();
 		}
 		this.#hasTurns = true;
-		if (!turn.cancelledByClient) mapper.finish(outcome, Date.now() - turn.startedAt);
+		if (!turn.cancelledByClient) turn.mapper.finish(outcome, Date.now() - turn.startedAt);
 		if (!turn.cancelledByClient && outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;
 		this.#ctx.logger.debug("turn finished", {
 			session: this.id,
@@ -544,6 +561,29 @@ export class PiSession {
 		this.#touch();
 		this.#syncSummary();
 		this.#consumePending();
+	}
+
+	/**
+	 * pi delivered a steering message mid-run. The current turn completes and
+	 * the rest of the run streams into a new turn that opens with the steering
+	 * message, the same split pi's session file (and so the reloaded history)
+	 * has. Returns the new turn.
+	 */
+	#promoteSteering(previous: ActiveTurn, text: string): ActiveTurn {
+		const sent = this.#steered.shift();
+		const message: Message = sent ?? { text, origin: { kind: MessageKind.User } };
+		this.#hasTurns = true;
+		previous.mapper.finish({ kind: "complete" }, Date.now() - previous.startedAt);
+		const turnId = crypto.randomUUID();
+		const mapper = new TurnMapper(turnId, (action) => {
+			if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
+		});
+		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
+		this.#dispatchChat({ type: ActionType.ChatTurnStarted, turnId, startedAt: new Date().toISOString(), message });
+		if (this.#turn === previous) this.#turn = turn;
+		this.#ctx.logger.debug("steering message started a turn", { session: this.id, from: previous.id, turn: turnId });
+		this.#syncSummary();
+		return turn;
 	}
 
 	/** Watches an agent for runs started outside the host. Returns the agent. */
@@ -681,6 +721,8 @@ export class PiSession {
 			const { id, message } = chat.steeringMessage;
 			this.#dispatchChat({ type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Steering, id });
 			this.#ctx.logger.debug("steering message sent", { session: this.id, turn: this.#turn.id, message: id });
+			// In a run the TUI started, pi's echo of the message already opens a turn (`#onAgentEvent`).
+			if (this.#turn !== this.#externalRun) this.#steered.push(message);
 			void this.#agent?.then((agent) => agent.steer(promptInput(message))).catch(() => {});
 		}
 		const next = chat.queuedMessages?.[0];
@@ -764,6 +806,13 @@ export class PiSession {
 			defaultChat: chatUri(this.id),
 		};
 	}
+}
+
+/** Text of the user message an event starts, or `undefined` if it starts no user message. */
+export function userMessageStarted(event: PiEvent): string | undefined {
+	if (event.type !== "message_start") return undefined;
+	const message = event.message as { role?: string; content?: Parameters<typeof userMessageText>[0] };
+	return message.role === "user" ? userMessageText(message.content) : undefined;
 }
 
 /** Builds pi prompt input from an AHP message and its attachments. */

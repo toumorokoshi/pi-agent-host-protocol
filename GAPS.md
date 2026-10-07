@@ -66,7 +66,8 @@ Known issues and features not yet implemented.
 - **Not yet tried against a real VS Code window**, only against the test client and a real `pi` TUI in a pty.
 - **Not published:** `pi install npm:pi-agent-host-protocol` does not work until the package is published to npm. Install from a built checkout.
 - **Mid-run attach:** when a TUI attaches while a run is streaming, the host picks up from that run's next user or assistant message. Earlier output of that run is missing until the session is reloaded.
-- **Steering typed in the terminal** during a run appears as a new turn, because each user message opens a turn.
+- **Steering typed in the terminal** during a run appears as a new turn, because each user message opens a turn. Steering sent from VS Code works the same way (see [specs/steering.md](specs/steering.md)).
+- **Steering that pi never delivers** (the run ends first, for example after a cancel) is dropped without a notice. pi keeps it in its own queue and may deliver it at the start of its next run, where it appears as part of that run's first turn.
 - **Two writers, briefly:** if a terminal opens a session while the host's own `pi` is mid-run, both can write to the file until that run ends.
 - **No auto-retry events** reach the host from a TUI (the extension API has none), so retries are not logged for live sessions.
 - **Extension dialogs** in the TUI still show in the terminal only; VS Code is not asked.

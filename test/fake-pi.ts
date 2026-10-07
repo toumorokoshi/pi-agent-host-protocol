@@ -49,6 +49,8 @@ export class FakePi {
 	replies: string[] = [];
 	/** The live branch returned for `get_branch`. */
 	entries: unknown[] = [];
+	/** When set, host prompts start no run; the test emits the run's events itself. */
+	manual = false;
 
 	constructor(channel: RpcChannel) {
 		this.channel = channel;
@@ -73,6 +75,7 @@ export class FakePi {
 				break;
 			case "prompt":
 				this.channel.respond(command, { data: { disposition: "started" } });
+				if (this.manual) break;
 				this.emit(runEvents(String(command.message), this.replies.shift() ?? "OK"));
 				break;
 			default:

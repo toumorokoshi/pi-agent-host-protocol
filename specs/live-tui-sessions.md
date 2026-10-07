@@ -131,7 +131,7 @@ A protocol version mismatch is rejected with a `response` error, and the bridge 
 
 - **Two writers:** a TUI can `pi --resume` a session while the host's rpc child is mid-turn. The host adopts the bridge only after the child is idle, so writes can briefly interleave.
 - **Event coverage:** the extension API has no `auto_retry_*` events, so retries are not visible for TUI sessions (they only matter for logging today).
-- **Steering typed in the TUI** during a run is not shown in VS Code (AHP has no host-originated steering part). Recorded as a gap.
+- **Steering typed in the TUI** during a run is shown in VS Code as a new turn, because each user message opens a turn. AHP has no host-originated steering part. Steering sent from VS Code during a host run is shown the same way (see [steering.md](steering.md)).
 - **Socket trust:** any local process of the same user can drive pi through the socket. That is the same trust level as pi itself. The socket is `0600` inside a `0700` directory.
 - **Windows** needs a named pipe instead of a unix socket. Out of scope.
 - **Out of scope (milestone 3):** tool approvals, forwarding extension dialogs, file diffs, `fetchTurns` paging.
