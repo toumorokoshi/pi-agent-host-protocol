@@ -5,7 +5,7 @@ Every session runs a real pi, so pi's [skills](https://agentskills.io/specificat
 The host also shows them to the client:
 
 - **Customizations:** each session lists the skills and prompt templates pi loaded, grouped by the folder they came from (for example `~/.pi/agent/skills` or `~/.agents/skills`). The list is read-only; skills cannot be toggled or added from the client.
-- **Completions:** typing `/` at the start of a message suggests matching skills and prompt templates. `/pdf` matches `/skill:pdf`.
+- **Completions:** typing `/` at the start of a message suggests matching skills and prompt templates. `/pdf` matches `/skill:pdf`. Each suggestion shows the skill's or template's `description`. A template with `argument-hint` in its frontmatter shows the hint as placeholder text after you pick it.
 
 ## Where pi finds skills
 

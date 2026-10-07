@@ -27,7 +27,7 @@ import {
 	toCustomizations,
 	type UserCommand,
 	userCommands,
-	withSkillFlags,
+	withFrontmatter,
 } from "./customizations.ts";
 import { turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
@@ -598,7 +598,7 @@ export class PiSession {
 
 	/** Reads the agent's skills and prompt templates and publishes them as session customizations. */
 	#loadCommands(agent: PiAgent): void {
-		const loaded = agent.commands().then((commands) => withSkillFlags(userCommands(commands)));
+		const loaded = agent.commands().then((commands) => withFrontmatter(userCommands(commands)));
 		this.#commands = loaded;
 		loaded
 			.then((commands) => {

@@ -32,6 +32,8 @@ export interface UserCommand {
 	readonly baseDir?: string;
 	/** The skill's `disable-model-invocation` frontmatter flag. */
 	readonly disableModelInvocation?: boolean;
+	/** The `argument-hint` frontmatter field: what to type after the command. */
+	readonly argumentHint?: string;
 }
 
 /**
@@ -55,21 +57,34 @@ export function userCommands(commands: readonly SlashCommandInfo[]): UserCommand
 	});
 }
 
-/** Adds each skill's `disable-model-invocation` flag, which pi's command list does not carry. */
-export function withSkillFlags(commands: readonly UserCommand[]): Promise<UserCommand[]> {
+/**
+ * Adds the frontmatter details pi's command list does not carry: each
+ * skill's `disable-model-invocation` flag and every command's
+ * `argument-hint`. Unreadable files keep the command unchanged.
+ */
+export function withFrontmatter(commands: readonly UserCommand[]): Promise<UserCommand[]> {
 	return Promise.all(
 		commands.map(async (command) => {
-			if (command.kind !== "skill") return command;
 			try {
 				const { frontmatter } = parseFrontmatter(await readFile(command.path, "utf8"));
-				return frontmatter["disable-model-invocation"] === true
-					? { ...command, disableModelInvocation: true }
-					: command;
+				return withFrontmatterFields(command, frontmatter);
 			} catch {
 				return command;
 			}
 		}),
 	);
+}
+
+/** The command with the details read from its parsed frontmatter. */
+export function withFrontmatterFields(command: UserCommand, frontmatter: Record<string, unknown>): UserCommand {
+	const hint = frontmatter["argument-hint"];
+	return {
+		...command,
+		...(command.kind === "skill" && frontmatter["disable-model-invocation"] === true
+			? { disableModelInvocation: true }
+			: {}),
+		...(typeof hint === "string" && hint.trim().length > 0 ? { argumentHint: hint.trim() } : {}),
+	};
 }
 
 function isWithin(dir: string, path: string): boolean {
@@ -98,7 +113,7 @@ function childCustomization(command: UserCommand): ChildCustomization {
 		type: CustomizationType.Skill,
 		id: uri,
 		uri,
-		name: command.name.startsWith(SKILL_PREFIX) ? command.name.slice(SKILL_PREFIX.length) : command.name,
+		name: skillName(command),
 		...description,
 		...(command.disableModelInvocation ? { disableModelInvocation: true } : {}),
 	};
@@ -130,6 +145,31 @@ export function toCustomizations(commands: readonly UserCommand[]): DirectoryCus
 	}));
 }
 
+/** The skill's name as users see it: the command name without `skill:`. */
+function skillName(command: UserCommand): string {
+	return command.name.startsWith(SKILL_PREFIX) ? command.name.slice(SKILL_PREFIX.length) : command.name;
+}
+
+/**
+ * VS Code's completion details for a command, in the `_meta` shapes its own
+ * agent hosts use: a skill reference (`uri`, `name`, `displayName`,
+ * `description`) for skills, and a command (`command`, `description`,
+ * `argumentHint`) for prompt templates. VS Code shows the description next
+ * to the item, a chip for the accepted reference, and the argument hint as
+ * placeholder text.
+ */
+export function completionMeta(command: UserCommand): Record<string, unknown> {
+	const description = command.description ? { description: command.description } : {};
+	if (command.kind === "skill") {
+		return { uri: fileUri(command.path), name: skillName(command), displayName: command.name, ...description };
+	}
+	return {
+		command: command.name,
+		...description,
+		...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+	};
+}
+
 function matches(command: UserCommand, query: string): boolean {
 	const name = command.name.toLowerCase();
 	return name.startsWith(query) || (name.startsWith(SKILL_PREFIX) && name.slice(SKILL_PREFIX.length).startsWith(query));
@@ -139,7 +179,8 @@ function matches(command: UserCommand, query: string): boolean {
  * Completions for a `/name` typed at the start of a message: every command
  * whose name (or skill name without `skill:`) starts with what was typed.
  * The item replaces the whole word around the cursor. Its attachment
- * carries no model representation, since pi expands the inserted `/name`.
+ * carries the command's details for display but no model representation,
+ * since pi expands the inserted `/name`.
  */
 export function slashCompletions(commands: readonly UserCommand[], text: string, offset: number): CompletionItem[] {
 	const typed = /^\/(\S*)$/.exec(text.slice(0, offset))?.[1];
@@ -154,6 +195,10 @@ export function slashCompletions(commands: readonly UserCommand[], text: string,
 			insertText: `/${command.name} `,
 			rangeStart: 0,
 			rangeEnd,
-			attachment: { type: MessageAttachmentKind.Simple, label: `/${command.name}` },
+			attachment: {
+				type: MessageAttachmentKind.Simple,
+				label: `/${command.name}`,
+				_meta: completionMeta(command),
+			},
 		}));
 }

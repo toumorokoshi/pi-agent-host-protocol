@@ -4,15 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { MessageAttachmentKind, MessageKind } from "@microsoft/agent-host-protocol";
 import { fileUri } from "../src/core/uris.ts";
 import {
+	completionMeta,
 	containerDir,
 	slashCompletions,
 	toCustomizations,
 	type UserCommand,
 	userCommands,
-	withSkillFlags,
+	withFrontmatter,
+	withFrontmatterFields,
 } from "../src/pi/customizations.ts";
+import { promptInput } from "../src/pi/pi-session.ts";
 import { newSession, PI_MODES, startHost, TestClient, type TestHost } from "./helpers.ts";
 
 function info(name: string, source: SlashCommandInfo["source"], path: string, baseDir?: string): SlashCommandInfo {
@@ -116,6 +120,14 @@ describe("pi commands as customizations", () => {
 		assert.equal(loose?.name, "/opt/skills");
 	});
 
+	test("reads argument-hint from frontmatter and ignores empty or non-string hints", () => {
+		assert.equal(withFrontmatterFields(PROMPT, { "argument-hint": " <file> " }).argumentHint, "<file>");
+		assert.equal(withFrontmatterFields(SKILL, { "argument-hint": "[topic]" }).argumentHint, "[topic]");
+		assert.equal(withFrontmatterFields(PROMPT, { "argument-hint": "  " }).argumentHint, undefined);
+		assert.equal(withFrontmatterFields(PROMPT, { "argument-hint": 3 }).argumentHint, undefined);
+		assert.equal(withFrontmatterFields(PROMPT, { "disable-model-invocation": true }).disableModelInvocation, undefined);
+	});
+
 	test("reads disable-model-invocation from SKILL.md", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-skill-"));
 		try {
@@ -123,7 +135,7 @@ describe("pi commands as customizations", () => {
 			const auto = join(dir, "auto.md");
 			await writeFile(manual, "---\nname: manual\ndescription: d\ndisable-model-invocation: true\n---\nbody\n");
 			await writeFile(auto, "---\nname: auto\ndescription: d\n---\nbody\n");
-			const [first, second, missing, prompt] = await withSkillFlags([
+			const [first, second, missing, prompt] = await withFrontmatter([
 				{ ...SKILL, path: manual },
 				{ ...SKILL, path: auto },
 				{ ...SKILL, path: join(dir, "missing.md") },
@@ -166,7 +178,30 @@ describe("slash completions", () => {
 			insertText: "/fix-tests ",
 			rangeStart: 0,
 			rangeEnd: 6,
-			attachment: { type: "simple", label: "/fix-tests" },
+			attachment: {
+				type: "simple",
+				label: "/fix-tests",
+				_meta: { command: "fix-tests", description: "Fix failing tests" },
+			},
+		});
+	});
+
+	test("describes skills as skill references and prompts as commands", () => {
+		assert.deepEqual(completionMeta(SKILL), {
+			uri: fileUri(SKILL.path),
+			name: "pdf",
+			displayName: "skill:pdf",
+			description: "Work with PDFs",
+		});
+		assert.deepEqual(completionMeta(NESTED_SKILL), {
+			uri: fileUri(NESTED_SKILL.path),
+			name: "inner",
+			displayName: "skill:inner",
+		});
+		assert.deepEqual(completionMeta({ ...PROMPT, argumentHint: "<file>" }), {
+			command: "fix-tests",
+			description: "Fix failing tests",
+			argumentHint: "<file>",
 		});
 	});
 
@@ -190,7 +225,10 @@ for (const mode of PI_MODES) {
 				"---\nname: demo\ndescription: A demo skill\ndisable-model-invocation: true\n---\nSay demo.\n",
 			);
 			await mkdir(join(agentDir, "prompts"), { recursive: true });
-			await writeFile(join(agentDir, "prompts", "review.md"), "---\ndescription: Review the code\n---\nReview.\n");
+			await writeFile(
+				join(agentDir, "prompts", "review.md"),
+				"---\ndescription: Review the code\nargument-hint: <path>\n---\nReview $1.\n",
+			);
 			client = await TestClient.connect(host.url);
 			await client.initialize();
 		});
@@ -238,6 +276,12 @@ for (const mode of PI_MODES) {
 				result.items.map((item: { insertText: string }) => item.insertText),
 				["/skill:demo "],
 			);
+			assert.deepEqual(result.items[0].attachment._meta, {
+				uri: fileUri(join(host.dir, "agent", "skills", "demo", "SKILL.md")),
+				name: "demo",
+				displayName: "skill:demo",
+				description: "A demo skill",
+			});
 			const prompts = await client.request("completions", {
 				kind: "userMessage",
 				channel: chat,
@@ -248,6 +292,11 @@ for (const mode of PI_MODES) {
 				prompts.items.map((item: { insertText: string }) => item.insertText),
 				["/review "],
 			);
+			assert.deepEqual(prompts.items[0].attachment._meta, {
+				command: "review",
+				description: "Review the code",
+				argumentHint: "<path>",
+			});
 		});
 
 		test("returns no completions for unknown channels or other text", async () => {
@@ -265,3 +314,21 @@ for (const mode of PI_MODES) {
 		});
 	});
 }
+
+describe("accepted completions in a sent message", () => {
+	test("leave the /name text for pi and add nothing for the chip", () => {
+		const input = promptInput({
+			text: "/skill:pdf summarize",
+			origin: { kind: MessageKind.User },
+			attachments: [
+				{
+					type: MessageAttachmentKind.Simple,
+					label: "/skill:pdf",
+					displayKind: "skill",
+					_meta: completionMeta(SKILL),
+				},
+			],
+		});
+		assert.deepEqual(input, { text: "/skill:pdf summarize", images: [] });
+	});
+});
