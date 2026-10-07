@@ -50,7 +50,9 @@ Known issues and features not yet implemented.
 - **No root-level listing:** `AgentInfo.customizations` is not published, so clients see skills only per session.
 - **Project trust in host sessions:** `pi --mode rpc` skips project skills unless the project is trusted (`/trust` or `defaultProjectTrust: "always"`). The host could offer a setting to pass `--approve`.
 - **Extension commands** are neither listed nor completed.
-- **Not yet tried in VS Code:** how much of the customization list VS Code renders, and whether it shows `/` completions from a remote host, has only been checked against the test client.
+- **Not yet confirmed in VS Code:** completions were checked against the live host and VS Code's source, but not yet in a reloaded Agents window. VS Code reuses the `InitializeResult` from its first handshake, so a window that last initialized against an older host needs one `NotFound` reconnect (now automatic) or a window reload.
+- **Plain completion items:** items use a `simple` attachment with no `_meta`, so VS Code shows them as plain text. VS Code's own hosts set `_meta` (`{ uri, name, displayName, description }` for skills, `{ command, isSkill }` for commands) to get descriptions and reference chips. Adding that would also show each skill's description in the popup.
+- **`/name` vs `/skill:name`:** VS Code's hosts insert `/<skill-name>`, while this host inserts `/skill:<name>` because pi expands only that form. Typing `/yft-pr-commit-description` by hand is therefore not expanded by pi.
 
 ## Terminals and resource watches
 
