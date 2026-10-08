@@ -52,6 +52,7 @@ Known issues and features not yet implemented.
 - **Extension commands** are neither listed nor completed.
 - **Not yet confirmed in VS Code:** completions were checked against the live host and VS Code's source, but not yet in a reloaded Agents window. VS Code reuses the `InitializeResult` from its first handshake, so a window that last initialized against an older host needs one `NotFound` reconnect (now automatic) or a window reload.
 - **Skill argument hints are not shown:** VS Code shows `argumentHint` only for command items, and skills are sent as skill references to get a skill chip. A skill's `argument-hint` is read but not displayed.
+- **Mid-message skills need the chip:** a skill later in a message is loaded only when it was picked from the completion list. Typing `/skill:<name>` there by hand, or pi terminal input, is not expanded. Prompt templates still work only at the start.
 - **`/name` vs `/skill:name`:** VS Code's hosts insert `/<skill-name>`, while this host inserts `/skill:<name>` because pi expands only that form. Typing `/yft-pr-commit-description` by hand is therefore not expanded by pi.
 
 ## Terminals and resource watches

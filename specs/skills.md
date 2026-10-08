@@ -18,12 +18,14 @@ AHP has both pieces: `SessionState.customizations` (directory containers holding
 - **Publishing:** `session/customizationsChanged` with the full list, skipped when it equals the current state.
 - **Completions:**
   - `initialize` returns `completionTriggerCharacters: ["/"]`. Clients keep the `InitializeResult` from their first handshake across reconnects (VS Code re-runs `initialize` only when `reconnect` fails with `NotFound`). So `reconnect` from a `clientId` this host instance never initialized (for example after a host restart or upgrade) fails with `NotFound` (`-32008`). Otherwise a client that first connected to an older host would never see the trigger characters, and VS Code would never ask for completions.
-  - `completions` with kind `userMessage` on a session or chat channel answers when the text before the cursor is `/` plus a word at the very start of the message, since pi expands commands only there. Items are commands whose name, or skill name without `skill:`, starts with the typed word (case-insensitive), sorted by name.
-  - An item replaces `[0, end of word)` with `/<name> ` and carries a `simple` attachment labelled `/<name>` with no model representation, so the prompt sent to pi is unchanged.
+  - `completions` with kind `userMessage` on a session or chat channel answers when the word before the cursor starts with `/` and begins the message or follows whitespace. Items are commands whose name, or skill name without `skill:`, starts with the typed word (case-insensitive), sorted by name. At the start of the message both skills and prompt templates match. Later in the message only skills do, because prompt templates take positional arguments and pi expands them only at the start.
+  - An item replaces `[start of the /word, end of word)` with `/<name> ` and carries a `simple` attachment labelled `/<name>` with no model representation.
   - The attachment's `_meta` (`completionMeta`) uses the shapes VS Code's own agent hosts send, which VS Code reads in `readCompletionAttachmentMeta`:
     - skills: `{ uri, name, displayName, description }`, where `uri` is the `SKILL.md` file URI, `name` the bare skill name and `displayName` the command name (`skill:<name>`). VS Code shows the description next to the item and adds a skill chip.
     - prompt templates: `{ command, description, argumentHint }`. VS Code shows the description and, once the item is accepted, the argument hint as placeholder text.
-  - When VS Code sends the message, the accepted chip comes back as a `simple` attachment with no model representation. `promptInput` ignores it, and the `/<name>` text stays in the message for pi to expand.
+  - When VS Code sends the message, the accepted chip comes back as a `simple` attachment with no model representation and the original `_meta`. VS Code rebuilds the chip from `_meta` only (`toAgentHostCompletionVariableEntry` keeps no `modelRepresentation`), so the host cannot put the skill's contents in the completion item; it resolves them when the message is sent.
+  - **Skills mid-message** (`referencedSkills`, `skillBlocks`): when a message is prompted or steered, each such chip whose `_meta.uri` is the `SKILL.md` of a skill the session's pi loaded is resolved. Unless the message starts with `/<that command>` (which pi expands itself), the host reads the file and appends the same `<skill name="…" location="…">` block pi builds to the prompt, after the message text and other attachments. Each skill is added once. Only loaded skills match, so a client cannot make the host read arbitrary files. Unreadable files are skipped.
+  - Prompt-template chips are always left to pi.
   - A session without an agent (loaded from disk, never run) starts one on the first completion request, since the list comes from pi.
   - Any failure returns no items; completions are best effort.
 - **Not supported:** `session/customizationToggled` stays rejected, because pi cannot disable one skill for a single session. Clients cannot write into the directories (`writable: false`, and `resourceWrite` is refused).
@@ -31,13 +33,16 @@ AHP has both pieces: `SessionState.customizations` (directory containers holding
 ## Trade-offs
 
 - Using the agent's list rather than scanning directories in the host keeps the host in step with pi's discovery rules, at the cost of needing a running agent. Sessions loaded from disk therefore show no customizations until their first turn or completion request.
+- Mid-message skills need the completion chip. A `/skill:<name>` typed by hand after the start of the message reaches pi as plain text. Resolving bare text too would be easy, but would also fire on paths or prose that happen to look like a command.
+- The skill block is appended to the end of the prompt rather than placed where the chip was. The model still sees `/skill:<name>` in place, and pi's own expansion also puts the skill block apart from the arguments.
 - The list is read once per agent. pi re-reads resources only on `/reload`, which the host does not observe (see GAPS.md).
 
 ## Tests
 
 - `test/customizations.test.ts`:
   - `userCommands`, `containerDir`, `toCustomizations`, `withFrontmatter` and `completionMeta` cases;
-  - slash completion matching, ranges, and the start-of-message rule;
-  - end to end in both modes: skills and prompts in the agent directory appear in session state, `/` is a trigger character, and `completions` returns them with their `_meta` details.
+  - slash completion matching and ranges: skills anywhere a word starts, prompt templates only at the start;
+  - `referencedSkills`, `skillBlock`, `skillBlocks` and `promptInput` context;
+  - end to end in both modes: skills and prompts in the agent directory appear in session state, `/` is a trigger character, and `completions` returns them with their `_meta` details; a skill chip accepted mid-message puts the skill's contents in the prompt the model receives.
 - `test/e2e.test.ts`: `reconnect` from an unknown client fails with `NotFound`, and the following `initialize` carries the trigger characters.
 - `test/extension.test.ts`: the bridge's `get_commands` forwards full command info.

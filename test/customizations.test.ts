@@ -3,12 +3,16 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
-import { MessageAttachmentKind, MessageKind } from "@microsoft/agent-host-protocol";
+import { MessageAttachmentKind, MessageKind, type SimpleMessageAttachment } from "@microsoft/agent-host-protocol";
 import { fileUri } from "../src/core/uris.ts";
 import {
 	completionMeta,
 	containerDir,
+	referencedSkills,
+	skillBlock,
+	skillBlocks,
 	slashCompletions,
 	toCustomizations,
 	type UserCommand,
@@ -205,9 +209,24 @@ describe("slash completions", () => {
 		});
 	});
 
-	test("only completes a slash at the start of the message", () => {
-		assert.deepEqual(slashCompletions(commands, "run /pdf", 8), []);
-		assert.deepEqual(slashCompletions(commands, " /pdf", 5), []);
+	test("completes skills, but not prompt templates, later in the message", () => {
+		const items = slashCompletions(commands, "summarize with /", 16);
+		assert.deepEqual(
+			items.map((item) => [item.insertText, item.rangeStart, item.rangeEnd]),
+			[
+				["/skill:inner ", 15, 16],
+				["/skill:pdf ", 15, 16],
+			],
+		);
+		assert.deepEqual(
+			slashCompletions(commands, "a\n/pd b", 5).map((item) => [item.insertText, item.rangeStart, item.rangeEnd]),
+			[["/skill:pdf ", 2, 5]],
+		);
+		assert.deepEqual(slashCompletions(commands, "run /fix", 8), []);
+	});
+
+	test("only completes a slash that starts a word", () => {
+		assert.deepEqual(slashCompletions(commands, "a/pdf", 5), []);
 		assert.deepEqual(slashCompletions(commands, "/pdf x", 6), []);
 	});
 });
@@ -299,6 +318,48 @@ for (const mode of PI_MODES) {
 			});
 		});
 
+		test("sends a skill picked later in the message to the model", async () => {
+			const { chat } = await newSession(host, client);
+			const skillPath = join(host.dir, "agent", "skills", "demo", "SKILL.md");
+			const completed = await client.request("completions", {
+				kind: "userMessage",
+				channel: chat,
+				text: "please use /dem",
+				offset: 15,
+			});
+			assert.deepEqual(
+				completed.items.map((item: { insertText: string; rangeStart: number }) => [item.insertText, item.rangeStart]),
+				[["/skill:demo ", 11]],
+			);
+			let userText = "";
+			host.faux.setResponses([
+				(context) => {
+					const user = context.messages.find((entry) => entry.role === "user");
+					const content = user?.content;
+					userText =
+						typeof content === "string"
+							? content
+							: (content ?? []).map((part) => ("text" in part ? part.text : "")).join("");
+					return fauxAssistantMessage("Done.");
+				},
+			]);
+			const turnId = crypto.randomUUID();
+			client.dispatch(chat, {
+				type: "chat/turnStarted",
+				turnId,
+				startedAt: new Date().toISOString(),
+				message: {
+					text: "please use /skill:demo now",
+					origin: { kind: "user" },
+					attachments: [{ ...completed.items[0].attachment, displayKind: "skill" }],
+				},
+			});
+			await client.waitFor((m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turnId);
+			assert.ok(userText.startsWith("please use /skill:demo now\n\n"), userText);
+			assert.ok(userText.includes(`<skill name="demo" location="${skillPath}">`), userText);
+			assert.ok(userText.includes("Say demo."), userText);
+		});
+
 		test("returns no completions for unknown channels or other text", async () => {
 			const { chat } = await newSession(host, client);
 			assert.deepEqual(
@@ -316,6 +377,67 @@ for (const mode of PI_MODES) {
 }
 
 describe("accepted completions in a sent message", () => {
+	const chip = (command: UserCommand): SimpleMessageAttachment => ({
+		type: MessageAttachmentKind.Simple,
+		label: `/${command.name}`,
+		displayKind: "skill",
+		_meta: completionMeta(command),
+	});
+	const message = (text: string, attachments: SimpleMessageAttachment[]) => ({
+		text,
+		origin: { kind: MessageKind.User as const },
+		attachments,
+	});
+
+	test("finds loaded skills referenced by chips after the start of the message", () => {
+		const commands = [SKILL, NESTED_SKILL, PROMPT];
+		assert.deepEqual(referencedSkills(message("look at x with /skill:pdf", [chip(SKILL), chip(SKILL)]), commands), [
+			SKILL,
+		]);
+		assert.deepEqual(
+			referencedSkills(message("/skill:pdf then /skill:inner", [chip(SKILL), chip(NESTED_SKILL)]), commands),
+			[NESTED_SKILL],
+		);
+		assert.deepEqual(referencedSkills(message("/skill:pdfx", [chip(SKILL)]), commands), [SKILL]);
+	});
+
+	test("ignores chips for unknown skills, prompts, or with a model representation", () => {
+		assert.deepEqual(referencedSkills(message("x /skill:pdf", [chip(SKILL)]), [PROMPT]), []);
+		assert.deepEqual(referencedSkills(message("x /fix-tests", [chip(PROMPT)]), [PROMPT]), []);
+		assert.deepEqual(
+			referencedSkills(message("x /skill:pdf", [{ ...chip(SKILL), modelRepresentation: "given" }]), [SKILL]),
+			[],
+		);
+	});
+
+	test("builds the skill block pi uses", () => {
+		assert.equal(
+			skillBlock(SKILL, "---\nname: pdf\ndescription: d\n---\n\nRead PDFs.\n"),
+			`<skill name="pdf" location="${SKILL.path}">\nReferences are relative to /home/u/.pi/agent/skills/pdf.\n\nRead PDFs.\n</skill>`,
+		);
+	});
+
+	test("reads skill blocks and skips unreadable skills", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "skill-blocks-"));
+		try {
+			const path = join(dir, "SKILL.md");
+			await writeFile(path, "---\nname: real\n---\nBody.\n");
+			const real: UserCommand = { name: "skill:real", kind: "skill", path };
+			assert.deepEqual(await skillBlocks([real, { ...real, path: join(dir, "missing.md") }]), [
+				skillBlock(real, "Body."),
+			]);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("appends host context after the message and attachments", () => {
+		assert.deepEqual(promptInput(message("x /skill:pdf", [chip(SKILL)]), ["<skill>"]), {
+			text: "x /skill:pdf\n\n<skill>",
+			images: [],
+		});
+	});
+
 	test("leave the /name text for pi and add nothing for the chip", () => {
 		const input = promptInput({
 			text: "/skill:pdf summarize",

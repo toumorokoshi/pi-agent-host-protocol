@@ -4,18 +4,23 @@
  */
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
-import { parseFrontmatter, type SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter, type SlashCommandInfo, stripFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
 	type ChildCustomization,
 	type CompletionItem,
 	CustomizationLoadStatus,
 	CustomizationType,
 	type DirectoryCustomization,
+	type Message,
 	MessageAttachmentKind,
 } from "@microsoft/agent-host-protocol";
 import { fileUri } from "../core/uris.ts";
 
-/** Characters that ask the client for `completions`. pi expands `/name` only at the start of a message. */
+/**
+ * Characters that ask the client for `completions`. Skills complete
+ * anywhere in a message; prompt templates only at its start, where pi
+ * expands them.
+ */
 export const COMPLETION_TRIGGER_CHARACTERS = ["/"];
 
 const SKILL_PREFIX = "skill:";
@@ -176,24 +181,30 @@ function matches(command: UserCommand, query: string): boolean {
 }
 
 /**
- * Completions for a `/name` typed at the start of a message: every command
- * whose name (or skill name without `skill:`) starts with what was typed.
- * The item replaces the whole word around the cursor. Its attachment
- * carries the command's details for display but no model representation,
- * since pi expands the inserted `/name`.
+ * Completions for a `/name` being typed. At the start of a message every
+ * command whose name (or skill name without `skill:`) starts with what was
+ * typed matches; after whitespace later in the message only skills do,
+ * since pi expands prompt templates only at the start. The item replaces
+ * the whole word around the cursor. Its attachment carries the command's
+ * details for display but no model representation: pi expands a leading
+ * `/name` itself, and the host adds skills referenced later in the message
+ * when it is sent (`referencedSkills`).
  */
 export function slashCompletions(commands: readonly UserCommand[], text: string, offset: number): CompletionItem[] {
-	const typed = /^\/(\S*)$/.exec(text.slice(0, offset))?.[1];
-	if (typed === undefined) return [];
+	const match = /(?:^|\s)\/(\S*)$/.exec(text.slice(0, offset));
+	if (!match) return [];
+	const typed = match[1] ?? "";
+	const rangeStart = offset - typed.length - 1;
+	const atStart = rangeStart === 0;
 	const end = text.slice(offset).search(/\s/);
 	const rangeEnd = end === -1 ? text.length : offset + end;
 	const query = typed.toLowerCase();
 	return commands
-		.filter((command) => matches(command, query))
+		.filter((command) => (atStart || command.kind === "skill") && matches(command, query))
 		.sort((a, b) => a.name.localeCompare(b.name))
 		.map((command) => ({
 			insertText: `/${command.name} `,
-			rangeStart: 0,
+			rangeStart,
 			rangeEnd,
 			attachment: {
 				type: MessageAttachmentKind.Simple,
@@ -201,4 +212,54 @@ export function slashCompletions(commands: readonly UserCommand[], text: string,
 				_meta: completionMeta(command),
 			},
 		}));
+}
+
+/** Whether pi itself expands the command: the message starts with `/<name>` followed by whitespace or nothing. */
+function expandedByPi(text: string, command: UserCommand): boolean {
+	const prefix = `/${command.name}`;
+	return text.startsWith(prefix) && (text.length === prefix.length || /\s/.test(text.charAt(prefix.length)));
+}
+
+/**
+ * Skills the message references through accepted completion chips that
+ * pi will not expand itself: a simple attachment without a model
+ * representation whose `_meta.uri` is the `SKILL.md` of a loaded skill.
+ * Only skills pi loaded match, so a client cannot make the host read other
+ * files. The skill at the very start of the message is left to pi, and
+ * each skill is returned once, in attachment order.
+ */
+export function referencedSkills(message: Message, commands: readonly UserCommand[]): UserCommand[] {
+	const byUri = new Map(
+		commands.filter((command) => command.kind === "skill").map((command) => [fileUri(command.path), command]),
+	);
+	const found = new Map<string, UserCommand>();
+	for (const attachment of message.attachments ?? []) {
+		if (attachment.type !== MessageAttachmentKind.Simple || attachment.modelRepresentation) continue;
+		const uri = attachment._meta?.uri;
+		const command = typeof uri === "string" ? byUri.get(uri) : undefined;
+		if (command && !expandedByPi(message.text, command)) found.set(command.path, command);
+	}
+	return [...found.values()];
+}
+
+/**
+ * The skill's contents as the model sees them, in the same block pi builds
+ * when it expands `/skill:<name>`.
+ */
+export function skillBlock(command: UserCommand, content: string): string {
+	return `<skill name="${skillName(command)}" location="${command.path}">\nReferences are relative to ${dirname(command.path)}.\n\n${stripFrontmatter(content).trim()}\n</skill>`;
+}
+
+/** Reads each skill's block. Unreadable skills are left out. */
+export async function skillBlocks(commands: readonly UserCommand[]): Promise<string[]> {
+	const blocks = await Promise.all(
+		commands.map(async (command) => {
+			try {
+				return skillBlock(command, await readFile(command.path, "utf8"));
+			} catch {
+				return undefined;
+			}
+		}),
+	);
+	return blocks.filter((block): block is string => block !== undefined);
 }

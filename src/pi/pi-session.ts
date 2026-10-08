@@ -23,6 +23,8 @@ import type { StateStore } from "../core/state-store.ts";
 import { chatUri, fileUri, PROVIDER, pathFromFileUri, sessionUri } from "../core/uris.ts";
 import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
 import {
+	referencedSkills,
+	skillBlocks,
 	slashCompletions,
 	toCustomizations,
 	type UserCommand,
@@ -531,7 +533,7 @@ export class PiSession {
 					attachments: run.kind === "prompt" ? run.message.attachments?.length : undefined,
 				});
 				this.#hostRun = true;
-				if (run.kind === "prompt") await agent.prompt(promptInput(run.message));
+				if (run.kind === "prompt") await agent.prompt(await this.#promptInput(run.message));
 				else await agent.resume();
 				outcome = turn.mapper.impliedOutcome();
 			}
@@ -594,6 +596,12 @@ export class PiSession {
 			this.#loadCommands(agent);
 		}
 		return agent;
+	}
+
+	/** Prompt input for a message, with the skills its completion chips reference later in the text. */
+	async #promptInput(message: Message): Promise<PromptInput> {
+		const commands = await (this.#commands ?? Promise.resolve([])).catch(() => []);
+		return promptInput(message, await skillBlocks(referencedSkills(message, commands)));
 	}
 
 	/** Reads the agent's skills and prompt templates and publishes them as session customizations. */
@@ -723,7 +731,7 @@ export class PiSession {
 			this.#ctx.logger.debug("steering message sent", { session: this.id, turn: this.#turn.id, message: id });
 			// In a run the TUI started, pi's echo of the message already opens a turn (`#onAgentEvent`).
 			if (this.#turn !== this.#externalRun) this.#steered.push(message);
-			void this.#agent?.then((agent) => agent.steer(promptInput(message))).catch(() => {});
+			void this.#agent?.then(async (agent) => agent.steer(await this.#promptInput(message))).catch(() => {});
 		}
 		const next = chat.queuedMessages?.[0];
 		if (next && !this.#turn && !chat.activeTurn) {
@@ -815,8 +823,12 @@ export function userMessageStarted(event: PiEvent): string | undefined {
 	return message.role === "user" ? userMessageText(message.content) : undefined;
 }
 
-/** Builds pi prompt input from an AHP message and its attachments. */
-export function promptInput(message: Message): PromptInput {
+/**
+ * Builds pi prompt input from an AHP message and its attachments. `context`
+ * is extra text the host resolved for the message (such as referenced
+ * skills), appended after the attachments.
+ */
+export function promptInput(message: Message, context: readonly string[] = []): PromptInput {
 	const images: ImageInput[] = [];
 	const extra: string[] = [];
 	for (const attachment of message.attachments ?? []) {
@@ -840,6 +852,6 @@ export function promptInput(message: Message): PromptInput {
 				break;
 		}
 	}
-	const text = [message.text, ...extra].filter((part) => part.length > 0).join("\n\n");
+	const text = [message.text, ...extra, ...context].filter((part) => part.length > 0).join("\n\n");
 	return { text, images };
 }
