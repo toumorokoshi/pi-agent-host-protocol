@@ -15,9 +15,12 @@ AHP has no response part for a delivered steering message. VS Code's own Copilot
   3. sends the rest of the run's events to the new turn's `TurnMapper`.
 - **Run end:** the run's outcome (complete, cancelled or error) ends the last turn of the run. `#steered` is cleared.
 - **Cancel:** cancelling a steered turn aborts pi the same way as any host turn.
+- **Steering with no turn running** (`PiSession.#consumePending`): a client can set a steering message when no turn is running. For example, VS Code's "send immediately" on a queued message turns it into a steering message, and the turn may end just before that arrives. Steering would then have nothing to steer, and the message would stay pending forever. Instead the host removes it and starts it as a normal turn (`chat/turnStarted` without `queuedMessageId`), ahead of any queued messages. The same check runs when a turn ends, so a steering message that arrives while a cancelled run is still unwinding starts once that run settles.
 - **Runs started in a pi TUI** already open a turn for every user message (`#onAgentEvent`), so a steering message sent from VS Code during such a run is not added to `#steered`.
 - **History:** live turns now split the same way as turns reloaded from the session file.
 
 ## Tests
 
 `test/external-turns.test.ts`, "a steering message sent during a host turn opens its own turn when pi delivers it", plays a run with `FakePi` in manual mode. It checks that `steer` is sent, that the steered message opens a second turn, and that each turn keeps its own reply.
+
+Two tests in the same file cover steering with no turn running: "a steering message sent while no turn runs starts its own turn instead of staying pending" and "a steering message sent while no turn runs goes ahead of queued messages".

@@ -721,10 +721,19 @@ export class PiSession {
 		if (level) await agent.setThinkingLevel(level);
 	}
 
-	/** Consumes steering and queued messages as the chat-channel spec describes. */
+	/**
+	 * Consumes steering and queued messages as the chat-channel spec describes.
+	 * A steering message that arrives with no turn running (for example a queued
+	 * message the client "sends immediately" just as the turn ends) starts its
+	 * own turn, ahead of the queue, so it is never left pending.
+	 */
 	#consumePending(): void {
 		const chat = this.#ctx.store.chat(this.id);
 		if (!chat) return;
+		if (chat.steeringMessage && !this.#turn && !chat.activeTurn) {
+			this.#startPendingTurn(PendingMessageKind.Steering, chat.steeringMessage);
+			return;
+		}
 		if (chat.steeringMessage && this.#turn && !this.#turn.cancelledByClient) {
 			const { id, message } = chat.steeringMessage;
 			this.#dispatchChat({ type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Steering, id });
@@ -734,19 +743,22 @@ export class PiSession {
 			void this.#agent?.then(async (agent) => agent.steer(await this.#promptInput(message))).catch(() => {});
 		}
 		const next = chat.queuedMessages?.[0];
-		if (next && !this.#turn && !chat.activeTurn) {
-			this.#dispatchChat({ type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Queued, id: next.id });
-			this.#ctx.logger.debug("queued message started", { session: this.id, message: next.id });
-			const turnId = crypto.randomUUID();
-			this.#dispatchChat({
-				type: ActionType.ChatTurnStarted,
-				turnId,
-				startedAt: new Date().toISOString(),
-				message: next.message,
-				queuedMessageId: next.id,
-			});
-			this.#runTurn(turnId, { kind: "prompt", message: next.message });
-		}
+		if (next && !this.#turn && !chat.activeTurn) this.#startPendingTurn(PendingMessageKind.Queued, next);
+	}
+
+	/** Removes a pending message and runs it as a new turn. */
+	#startPendingTurn(kind: PendingMessageKind, pending: { id: string; message: Message }): void {
+		this.#dispatchChat({ type: ActionType.ChatPendingMessageRemoved, kind, id: pending.id });
+		this.#ctx.logger.debug(`${kind} message started a turn`, { session: this.id, message: pending.id });
+		const turnId = crypto.randomUUID();
+		this.#dispatchChat({
+			type: ActionType.ChatTurnStarted,
+			turnId,
+			startedAt: new Date().toISOString(),
+			message: pending.message,
+			...(kind === PendingMessageKind.Queued ? { queuedMessageId: pending.id } : {}),
+		});
+		this.#runTurn(turnId, { kind: "prompt", message: pending.message });
 	}
 
 	#maybeSetTitle(text: string): void {

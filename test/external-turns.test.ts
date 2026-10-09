@@ -142,6 +142,79 @@ describe("turns started outside the host", () => {
 		assert.equal(turns[1]!.responseParts.find((part) => part.kind === "markdown")?.content, "Queued reply");
 	});
 
+	test("a steering message sent while no turn runs starts its own turn instead of staying pending", async () => {
+		const { chat } = await newSession({ cwd: dir } as never, client);
+		const pi = backend.pis.at(-1)!;
+		pi.replies = ["Sent now"];
+		const seq = lastSeq();
+		// A queued message the client "sends immediately" after the turn already ended.
+		client.dispatch(chat, {
+			type: "chat/pendingMessageSet",
+			kind: "steering",
+			id: "s-idle",
+			message: { text: "Do this now", origin: { kind: "user" } },
+		});
+		const turn = await started(chat, seq);
+		assert.equal(turn.params.action.message.text, "Do this now");
+		assert.equal(turn.params.action.queuedMessageId, undefined);
+		await client.waitFor(
+			(m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turn.params.action.turnId,
+		);
+		const prompt = pi.commands.find((command) => command.type === "prompt" && command.message === "Do this now");
+		assert.ok(prompt, "sent to pi as a prompt");
+		assert.equal(
+			pi.commands.some((command) => command.type === "steer"),
+			false,
+		);
+		const state = client.chats.get(chat)!;
+		assert.equal(state.steeringMessage, undefined);
+		assert.deepEqual(
+			state.turns.map((t) => [t.message.text, t.state]),
+			[["Do this now", "complete"]],
+		);
+		assert.equal(state.turns[0]!.responseParts.find((part) => part.kind === "markdown")?.content, "Sent now");
+	});
+
+	test("a steering message sent while no turn runs goes ahead of queued messages", async () => {
+		const { chat } = await newSession({ cwd: dir } as never, client);
+		const pi = backend.pis.at(-1)!;
+		const events = runEvents("From the TUI", "TUI reply");
+		const seq = lastSeq();
+		pi.emit(events.slice(0, 3));
+		await started(chat, seq);
+		client.dispatch(chat, {
+			type: "chat/pendingMessageSet",
+			kind: "queued",
+			id: "q-later",
+			message: { text: "Later", origin: { kind: "user" } },
+		});
+		client.dispatch(chat, {
+			type: "chat/turnCancelled",
+			turnId: client.chats.get(chat)!.activeTurn!.id,
+			duration: 1,
+		});
+		await client.waitFor((m) => m.params?.action?.type === "chat/turnCancelled" && m.params.channel === chat);
+		// The cancelled run is not settled yet, so the queued message is still waiting.
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		client.dispatch(chat, {
+			type: "chat/pendingMessageSet",
+			kind: "steering",
+			id: "s-first",
+			message: { text: "First", origin: { kind: "user" } },
+		});
+		await client.waitFor(
+			(m) => m.params?.action?.type === "chat/turnStarted" && m.params.action.queuedMessageId === "q-later",
+		);
+		await waitUntil(() => !client.chats.get(chat)!.activeTurn);
+		const state = client.chats.get(chat)!;
+		assert.deepEqual(
+			state.turns.map((t) => t.message.text),
+			["From the TUI", "First", "Later"],
+		);
+		assert.equal(state.steeringMessage, undefined);
+		assert.equal(state.queuedMessages, undefined);
+	});
+
 	test("a steering message sent during a host turn opens its own turn when pi delivers it", async () => {
 		const { chat } = await newSession({ cwd: dir } as never, client);
 		const pi = backend.pis.at(-1)!;

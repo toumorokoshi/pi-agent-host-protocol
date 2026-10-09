@@ -35,6 +35,12 @@ Known issues and features not yet implemented.
 - **Agent directory not detected (rpc):** the host does not ask the `pi` executable which agent directory it uses. If the installed `pi` defaults to a different directory than `~/.pi/agent` (for example a build with `userConfigDir: ".av-pi"`), pass `--agent-dir`, or saved sessions vanish from the list after a restart.
 - **Version skew (rpc):** the host is tested against the pi bundled in `node_modules`. An installed `pi` with a different RPC protocol version is not detected.
 
+## Steering and queued messages
+
+- **A steer that pi receives as its run settles can be lost or delayed.** If the host sends `steer` just after pi's loop last checked its steering queue, pi stores the message but doesn't start a run for it. The message then runs with the next prompt, or never runs. The host can't tell, because the steering message has already left the pending state. Fixing this needs pi to report its queue (for example `queue_update`), or the host to send `steer` only while pi is still streaming.
+- **Messages can't be held while the session is idle.** The host starts a queued message straight away when no turn is running. AHP has no "paused" queue state.
+- **Not checked against VS Code:** "send immediately" on a queued message was read from VS Code's documentation, and its exact action sequence hasn't been observed.
+
 ## Resuming errored turns
 
 - **pi's run loop is bypassed (embedded mode):** a resumed run calls `agent.continue()` directly because pi has no public continue API. pi's auto-retry, automatic compaction, `agent_settled` and `agent_before_settle` hooks therefore don't run for the continuation. Asking pi for a public `AgentSession.continue()` would remove this.

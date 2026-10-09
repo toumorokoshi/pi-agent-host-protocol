@@ -45,7 +45,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 - `session created`, `session loaded` (opened from a pi session file), `session ready`, `session disposed`
 - `turn started outside the host` (a run typed in a pi terminal), `live session ready`
 - `turn started` (model, prompt length, attachment count), `turn resumed` (a `chat/turnResume` after a resumable error), and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
-- `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `steering message started a turn`, `queued message started`
+- `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `steering message started a turn` (also logged when a steering message arrives with no turn running), `queued message started a turn`
 - `terminal created` (shell, cwd, pid), `terminal exited` (exit code), `terminal disposed`
 - `resource watch created` (root, recursive) and `resource watch released`. Watcher failures are logged as `resource watch error` at warn.
 - In `rpc` mode: `idle session kept (background processes)` (with the `pids` pi started since it became ready), `could not read the process table`, `pi stderr`, one line per line pi writes to stderr (tagged `session=<id>`, or `purpose=models` for the process that lists models), and `extension dialog dismissed` when a pi extension asks for input that the host cannot show.
