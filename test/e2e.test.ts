@@ -346,5 +346,50 @@ for (const mode of PI_MODES) {
 				await second.cleanup();
 			}
 		});
+
+		test("keeps sessions archived across a restart", async () => {
+			const first = await startHost({ mode });
+			const client = await TestClient.connect(first.url);
+			await client.initialize();
+			const archived = await newSession(first, client);
+			const kept = await newSession(first, client);
+			for (const { chat } of [archived, kept]) {
+				first.faux.setResponses([fauxAssistantMessage("Done.")]);
+				const turnId = startTurn(client, chat, "Finish this");
+				await client.waitFor(
+					(m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turnId,
+				);
+			}
+			// VS Code's "mark as done" archives the session; archiving and unarchiving
+			// the other one checks that the flag can be cleared again.
+			client.dispatch(archived.session, { type: "session/isArchivedChanged", isArchived: true });
+			client.dispatch(kept.session, { type: "session/isArchivedChanged", isArchived: true });
+			client.dispatch(kept.chat, { type: "chat/isArchivedChanged", isArchived: false });
+			// Requests are handled in order, so this also waits for the dispatches.
+			const before = await client.request("listSessions", { channel: "ahp-root://" });
+			const statusBefore = (session: string) =>
+				before.items.find((item: any) => item.resource === session)?.status ?? 0;
+			assert.ok(statusBefore(archived.session) & SessionStatus.IsArchived);
+			assert.equal(statusBefore(kept.session) & SessionStatus.IsArchived, 0);
+			client.close();
+			await first.stop();
+
+			const second = await startHost({ dir: first.dir, mode });
+			try {
+				const reconnected = await TestClient.connect(second.url);
+				await reconnected.initialize();
+				const list = await reconnected.request("listSessions", { channel: "ahp-root://" });
+				const status = (session: string) => list.items.find((item: any) => item.resource === session)?.status ?? 0;
+				assert.ok(status(archived.session) & SessionStatus.IsArchived, "archived session is still archived");
+				assert.equal(status(kept.session) & SessionStatus.IsArchived, 0, "unarchived session stays unarchived");
+
+				// Loading the session from disk keeps the flag in its state too.
+				const snapshot = await reconnected.request("subscribe", { channel: archived.session });
+				assert.ok(snapshot.snapshot.state.status & SessionStatus.IsArchived, "session snapshot is archived");
+				reconnected.close();
+			} finally {
+				await second.cleanup();
+			}
+		});
 	});
 }

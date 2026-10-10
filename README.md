@@ -119,6 +119,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - **Resumable errors:** when the model server fails mid-turn (for example llama.cpp's `Failed to parse input` on a malformed tool call), the turn ends with a resumable error. The client can then continue the same turn without sending a new message, and the failed reply is left out of the model's context, the same as pi's own auto-retry.
 - `listSessions` covers existing pi sessions on disk. Subscribing to one loads its history; new turns continue the same session file.
 - Session titles: the first prompt sets the title, and renaming from the client writes the name back to pi.
+- **Archived ("done") sessions stay archived** across host restarts. pi's session files have no archived flag, so the host keeps the list in `~/.pi/agent-host-protocol/archived-sessions.json` (see [specs/archived-sessions.md](specs/archived-sessions.md)).
 - **Live terminal sessions:** interactive `pi` processes share their sessions through the bundled pi extension, in both directions. A session is written by only one pi at a time: when a terminal opens a session the host is running, the host hands it over.
 - Read-only `resourceRead`, `resourceList` and `resourceResolve` on host-local `file:` URIs, used for browsing to pick a working directory. Write operations are refused.
 - **Terminals:** `createTerminal` and `disposeTerminal` run your `$SHELL` in a real pty in the requested directory. Keystrokes, resizes, renames, `clear` and exit codes all work, and `RootState.terminals` lists every terminal.

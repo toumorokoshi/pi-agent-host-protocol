@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { bridgeSocketPath } from "../bridge/protocol.ts";
 import { createLogger, LOG_LEVELS, type Logger, parseLogLevel } from "../core/logger.ts";
 import { AgentHost } from "../host/agent-host.ts";
+import { archivePath, fileArchiveStore } from "../host/archive-store.ts";
 import { BridgeServer, HostAlreadyRunningError } from "../host/bridges.ts";
 import { type PiDirs, piDirsEnv, resolvePiDirs } from "../host/pi-dirs.ts";
 import { loadSettings, migrateSettings, saveSettings, settingsPath } from "../host/settings.ts";
@@ -116,8 +117,12 @@ async function main(): Promise<void> {
 			DEFAULT_IDLE_TIMEOUT_MINUTES,
 	);
 	if (piMode === "rpc") logger.info("idle timeout", { minutes: idleTimeoutMs / 60_000 });
+	const archive = await fileArchiveStore(archivePath(settingsPath()), (error) =>
+		logger.warn("could not save archived sessions", { error: error instanceof Error ? error.message : String(error) }),
+	);
 	const agentHost = new AgentHost({
 		backend,
+		archive,
 		idleTimeoutMs,
 		defaultDirectory: values.cwd ?? process.cwd(),
 		serverVersion: packageVersion(),

@@ -21,6 +21,7 @@ import {
 import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
 import { chatUri, fileUri, PROVIDER, pathFromFileUri, sessionUri } from "../core/uris.ts";
+import type { ArchiveStore } from "../host/archive-store.ts";
 import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
 import {
 	referencedSkills,
@@ -40,6 +41,8 @@ export interface SessionHostContext {
 	readonly store: StateStore;
 	readonly backend: PiBackend;
 	readonly logger: Logger;
+	/** Archived ("done") flags, which pi's session files cannot hold. */
+	readonly archive: ArchiveStore;
 	/** Publishes `root/sessionSummaryChanged` for this session. */
 	summaryChanged(sessionId: string, changes: SessionSummaryChanges): void;
 	/** Called whenever a session starts or stops running a turn. */
@@ -183,7 +186,7 @@ export class PiSession {
 			lastTurn?.startedAt && lastTurn.duration !== undefined
 				? new Date(Date.parse(lastTurn.startedAt) + lastTurn.duration).toISOString()
 				: createdAt;
-		const status = SessionStatus.Idle | SessionStatus.IsRead;
+		const status = restoredStatus(ctx.archive.isArchived(id));
 		session.#hasTurns = turns.length > 0;
 		ctx.store.addSession(id, session.#initialSessionState(title, SessionLifecycle.Ready, status), {
 			...session.#chatSummary(title, status, modifiedAt),
@@ -315,8 +318,11 @@ export class PiSession {
 			case ActionType.ChatPendingMessageSet:
 				this.#consumePending();
 				break;
-			case ActionType.ChatIsReadChanged:
 			case ActionType.ChatIsArchivedChanged:
+				this.#ctx.archive.setArchived(this.id, action.isArchived);
+				this.#syncSummary();
+				break;
+			case ActionType.ChatIsReadChanged:
 				this.#syncSummary();
 				break;
 			default:
@@ -340,6 +346,7 @@ export class PiSession {
 				break;
 			case ActionType.SessionIsArchivedChanged:
 				this.#dispatchChat({ type: ActionType.ChatIsArchivedChanged, isArchived: action.isArchived });
+				this.#ctx.archive.setArchived(this.id, action.isArchived);
 				this.#syncSummary();
 				break;
 			default:
@@ -826,6 +833,14 @@ export class PiSession {
 			defaultChat: chatUri(this.id),
 		};
 	}
+}
+
+/**
+ * Status of a session loaded from disk: idle and read, plus the archived
+ * flag the host persisted for it.
+ */
+export function restoredStatus(archived: boolean): SessionStatus {
+	return SessionStatus.Idle | SessionStatus.IsRead | (archived ? SessionStatus.IsArchived : 0);
 }
 
 /** Text of the user message an event starts, or `undefined` if it starts no user message. */

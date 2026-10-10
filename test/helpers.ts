@@ -21,6 +21,7 @@ import {
 import WebSocket from "ws";
 import { type Logger, silentLogger } from "../src/core/logger.ts";
 import { AgentHost } from "../src/host/agent-host.ts";
+import { fileArchiveStore } from "../src/host/archive-store.ts";
 import { BridgeServer } from "../src/host/bridges.ts";
 import type { PiBackend, PiMode } from "../src/pi/agent.ts";
 import { EmbeddedBackend } from "../src/pi/embedded-backend.ts";
@@ -89,6 +90,7 @@ export async function startHost(
 		logger: options.logger,
 		idleTimeoutMs: options.idleTimeoutMs,
 		now: options.now,
+		archive: await fileArchiveStore(join(dir, "archived-sessions.json")),
 	});
 	await host.refreshAgents();
 	const listener: Listener = await listen(host, { host: "127.0.0.1", port: 0, token: options.token });

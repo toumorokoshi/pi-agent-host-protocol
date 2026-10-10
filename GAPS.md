@@ -20,6 +20,14 @@ Known issues and features not yet implemented.
 - **Activity text is English only and based on tool names:** custom tools from extensions show `Running <tool>`. Retries and compaction have no activity text of their own.
 - **Read-only file access:** `resourceWrite` and the other write operations are refused.
 
+## Archived sessions
+
+See [specs/archived-sessions.md](specs/archived-sessions.md).
+
+- The read/unread flag is not persisted: every session loaded from disk starts as read.
+- Archived ids are never pruned, so the file keeps ids of session files deleted outside the host.
+- Two hosts sharing one state directory (`PI_AGENT_HOST_PROTOCOL_DIR`) would overwrite each other's archive file. The bridge socket lock normally prevents this.
+
 ## pi modes
 
 - **Idle sessions (rpc):** see [specs/idle-sessions.md](specs/idle-sessions.md).

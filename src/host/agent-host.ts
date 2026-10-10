@@ -13,7 +13,6 @@ import {
 	type ListSessionsResult,
 	type ReconnectResult,
 	ReconnectResultType,
-	SessionStatus,
 	type SessionSummary,
 	type Snapshot,
 	type StateAction,
@@ -35,11 +34,12 @@ import type { PiBackend } from "../pi/agent.ts";
 import { COMPLETION_TRIGGER_CHARACTERS } from "../pi/customizations.ts";
 import { sweepInterval } from "../pi/idle.ts";
 import { toSessionModelInfo } from "../pi/models.ts";
-import { PiSession, type SessionHostContext, type SessionSummaryChanges } from "../pi/pi-session.ts";
+import { PiSession, restoredStatus, type SessionHostContext, type SessionSummaryChanges } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
+import { type ArchiveStore, memoryArchiveStore } from "./archive-store.ts";
 import type { LiveSessionHandler } from "./bridges.ts";
 import { Connection, type ConnectionHandler, type RESPONDED, type Reply } from "./connection.ts";
 import { ResourceWatchService } from "./resource-watches.ts";
@@ -59,6 +59,8 @@ export interface AgentHostOptions {
 	idleTimeoutMs?: number;
 	/** The clock, in ms (tests replace it). */
 	now?: () => number;
+	/** Persisted archived flags. Kept in memory when unset. */
+	archive?: ArchiveStore;
 }
 
 type ActionOutcome = { kind: "accepted" } | { kind: "rejected"; reason: string } | { kind: "ignored" };
@@ -115,6 +117,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	readonly #idleTimer: NodeJS.Timeout | undefined;
 	#sweeping: Promise<number> | undefined;
 	readonly now: () => number;
+	readonly archive: ArchiveStore;
 
 	constructor(options: AgentHostOptions) {
 		this.backend = options.backend;
@@ -122,6 +125,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		this.#serverVersion = options.serverVersion ?? "0.0.0";
 		this.logger = options.logger ?? silentLogger;
 		this.now = options.now ?? Date.now;
+		this.archive = options.archive ?? memoryArchiveStore();
 		this.#idleTimeoutMs = options.idleTimeoutMs ?? 0;
 		if (this.#idleTimeoutMs > 0) {
 			this.#idleTimer = setInterval(() => void this.suspendIdleSessions(), sweepInterval(this.#idleTimeoutMs));
@@ -212,6 +216,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		this.#terminals.disposeAll();
 		await this.#watches.disposeAll();
 		await this.backend.dispose();
+		await this.archive.flush();
 	}
 
 	#isSubscribed(channel: string): boolean {
@@ -555,7 +560,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		}
 		const all = [...live.values()];
 		for (const info of await this.#catalogSessions()) {
-			if (!live.has(info.id) && info.messageCount > 0) all.push(catalogSummary(info));
+			if (!live.has(info.id) && info.messageCount > 0) all.push(catalogSummary(info, this.archive.isArchived(info.id)));
 		}
 		all.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 		const offset = typeof params.cursor === "string" ? Number.parseInt(params.cursor, 10) || 0 : 0;
@@ -648,13 +653,13 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	}
 }
 
-function catalogSummary(info: SessionInfo): SessionSummary {
+function catalogSummary(info: SessionInfo, archived: boolean): SessionSummary {
 	const firstLine = info.firstMessage.trim().split("\n")[0] ?? "";
 	return {
 		resource: sessionUri(info.id),
 		provider: PROVIDER,
 		title: info.name || (firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine) || "Untitled session",
-		status: SessionStatus.Idle | SessionStatus.IsRead,
+		status: restoredStatus(archived),
 		createdAt: info.created.toISOString(),
 		modifiedAt: info.modified.toISOString(),
 		workingDirectories: [fileUri(info.cwd)],

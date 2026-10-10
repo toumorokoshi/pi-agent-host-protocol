@@ -36,7 +36,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 
 - `connection rejected: missing or invalid token`: the URL's `?tkn=` didn't match the settings file.
 - `request failed`: a request returned an error. Includes the method, channel and error message.
-- `request before initialize`, `could not load models`, `could not save session title`, `could not attach live session`, `could not suspend idle session`
+- `request before initialize`, `could not load models`, `could not save session title`, `could not attach live session`, `could not suspend idle session`, `could not save archived sessions`
 
 **`debug`**: every interaction with a session.
 
