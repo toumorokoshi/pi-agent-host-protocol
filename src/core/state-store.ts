@@ -120,6 +120,11 @@ export class StateStore {
 		if (state && state.status !== status) this.#sessions.set(id, { ...state, status });
 	}
 
+	setChatTitle(id: string, title: string): void {
+		const state = this.#chats.get(id);
+		if (state && state.title !== title) this.#chats.set(id, { ...state, title });
+	}
+
 	snapshot(channel: string): Snapshot | undefined {
 		const fromSeq = this.#seq;
 		const exact = this.#exact.get(channel);

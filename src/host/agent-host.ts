@@ -22,6 +22,7 @@ import type { AttachRequest } from "../bridge/protocol.ts";
 import { type Logger, silentLogger } from "../core/logger.ts";
 import { StateStore } from "../core/state-store.ts";
 import {
+	chatUri,
 	fileUri,
 	PROVIDER,
 	parseChannel,
@@ -655,14 +656,23 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 
 function catalogSummary(info: SessionInfo, archived: boolean): SessionSummary {
 	const firstLine = info.firstMessage.trim().split("\n")[0] ?? "";
+	const title = info.name || (firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine) || "Untitled session";
+	const status = restoredStatus(archived);
 	return {
 		resource: sessionUri(info.id),
 		provider: PROVIDER,
-		title: info.name || (firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine) || "Untitled session",
-		status: restoredStatus(archived),
+		title,
+		status,
 		createdAt: info.created.toISOString(),
 		modifiedAt: info.modified.toISOString(),
 		workingDirectories: [fileUri(info.cwd)],
+		chats: [
+			{
+				resource: chatUri(info.id),
+				title,
+				status,
+			},
+		],
 	};
 }
 

@@ -233,6 +233,7 @@ export class PiSession {
 			createdAt: this.createdAt,
 			modifiedAt: chat?.modifiedAt ?? this.createdAt,
 			workingDirectories: [fileUri(this.cwd)],
+			...(session?.chats ? { chats: session.chats } : {}),
 			...(chat?.activity ? { activity: chat.activity } : {}),
 		};
 	}
@@ -336,7 +337,13 @@ export class PiSession {
 		switch (action.type) {
 			case ActionType.SessionTitleChanged:
 				this.#saveTitle(action.title);
-				this.#ctx.summaryChanged(this.id, { title: action.title });
+				this.#ctx.store.setChatTitle(this.id, action.title);
+				this.#dispatchSession({
+					type: ActionType.SessionChatUpdated,
+					chat: chatUri(this.id),
+					changes: { title: action.title },
+				});
+				this.#syncTitle(action.title);
 				break;
 			// The default chat's status is the session's summary status (it carries
 			// the turn's activity bits), so session-level flags are mirrored onto it.
@@ -774,7 +781,23 @@ export class PiSession {
 		const title = titleFrom(text);
 		if (title === UNTITLED) return;
 		this.#dispatchSession({ type: ActionType.SessionTitleChanged, title });
-		this.#ctx.summaryChanged(this.id, { title });
+		this.#dispatchSession({
+			type: ActionType.SessionChatUpdated,
+			chat: chatUri(this.id),
+			changes: { title },
+		});
+		this.#ctx.store.setChatTitle(this.id, title);
+		this.#saveTitle(title);
+		this.#syncTitle(title);
+	}
+
+	#syncTitle(title: string): void {
+		const chat = this.#ctx.store.chat(this.id);
+		const status = chat?.status ?? SessionStatus.Idle;
+		this.#ctx.summaryChanged(this.id, {
+			title,
+			chats: [{ resource: chatUri(this.id), title, status }],
+		});
 	}
 
 	/** Mirrors the chat's summary fields into the session catalog and root summary. */

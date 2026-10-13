@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { SessionStatus } from "@microsoft/agent-host-protocol";
+import { parseSessionUri } from "../src/core/uris.ts";
 import { newSession, PI_MODES, startHost, startTurn, TestClient, type TestHost, vscodeChatUri } from "./helpers.ts";
 
 describe("handshake", () => {
@@ -91,6 +92,9 @@ for (const mode of PI_MODES) {
 			const markdown = turn.responseParts.filter((part) => part.kind === "markdown");
 			assert.equal(markdown.map((part) => (part as { content: string }).content).join(""), "Hello from pi!");
 			assert.equal(client.sessions.get(session)?.title, "Say hello");
+			assert.equal(client.sessions.get(session)?.chats[0]?.title, "Say hello");
+			const sessionId = parseSessionUri(session)!;
+			assert.equal(host.host.store.chat(sessionId)?.title, "Say hello");
 		});
 
 		test("maps tool calls to completed tool call parts", async () => {
@@ -253,8 +257,14 @@ for (const mode of PI_MODES) {
 		test("accepts VS Code's session rename addressed to the chat channel", async () => {
 			const { session, chat } = await newSession(host, client);
 			client.dispatch(chat, { type: "session/titleChanged", title: "Renamed" });
-			await client.waitFor((m) => m.method === "root/sessionSummaryChanged" && m.params.changes.title === "Renamed");
+			const summary = await client.waitFor(
+				(m) => m.method === "root/sessionSummaryChanged" && m.params.changes.title === "Renamed",
+			);
 			assert.equal(client.sessions.get(session)?.title, "Renamed");
+			assert.equal(client.sessions.get(session)?.chats[0]?.title, "Renamed");
+			assert.equal(summary.params.changes.chats?.[0]?.title, "Renamed");
+			const sessionId = parseSessionUri(session)!;
+			assert.equal(host.host.store.chat(sessionId)?.title, "Renamed");
 		});
 
 		test("replays missed actions on reconnect", async () => {
