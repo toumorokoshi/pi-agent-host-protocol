@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	AgentSessionEvent,
 	JsonAgentSessionEvent,
@@ -85,5 +88,23 @@ export interface PiBackend {
 	openSessionManager(path: string): SessionManager;
 	/** Starts an agent on a session created or opened by this backend. */
 	startAgent(cwd: string, sessionManager: SessionManager): Promise<PiAgent>;
+	/**
+	 * pi's commands outside any project: what `PiAgent.commands()` lists for
+	 * an agent started in an empty folder. No session is saved.
+	 */
+	globalCommands(): Promise<readonly SlashCommandInfo[]>;
 	dispose(): Promise<void>;
+}
+
+/** How long backends reuse `globalCommands()`: the host asks on every `initialize`. */
+export const GLOBAL_COMMANDS_TTL_MS = 30_000;
+
+/** Runs `run` in a new empty temporary folder, removed afterwards. */
+export async function inEmptyDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
+	const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-empty-"));
+	try {
+		return await run(dir);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 }

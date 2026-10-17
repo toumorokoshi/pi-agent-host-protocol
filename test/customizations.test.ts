@@ -236,8 +236,9 @@ for (const mode of PI_MODES) {
 		let host: TestHost;
 		let client: TestClient;
 		before(async () => {
-			host = await startHost({ mode });
-			const agentDir = join(host.dir, "agent");
+			// Written before the host starts, which reads its global commands.
+			const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-test-"));
+			const agentDir = join(dir, "agent");
 			await mkdir(join(agentDir, "skills", "demo"), { recursive: true });
 			await writeFile(
 				join(agentDir, "skills", "demo", "SKILL.md"),
@@ -248,12 +249,23 @@ for (const mode of PI_MODES) {
 				join(agentDir, "prompts", "review.md"),
 				"---\ndescription: Review the code\nargument-hint: <path>\n---\nReview $1.\n",
 			);
+			host = await startHost({ mode, dir });
 			client = await TestClient.connect(host.url);
 			await client.initialize();
 		});
 		after(async () => {
 			client.close();
 			await host.cleanup();
+		});
+
+		test("publishes pi's global skills and prompts as the agent's customizations", () => {
+			const customizations = client.root?.agents[0]?.customizations ?? [];
+			const names = (uri: string) => {
+				const entry = customizations.find((c) => c.uri === uri);
+				return entry && "children" in entry ? entry.children?.map((child) => child.name) : undefined;
+			};
+			assert.deepEqual(names(fileUri(join(host.dir, "agent", "skills"))), ["demo"]);
+			assert.deepEqual(names(fileUri(join(host.dir, "agent", "prompts"))), ["review"]);
 		});
 
 		test("advertises / as a completion trigger", async () => {

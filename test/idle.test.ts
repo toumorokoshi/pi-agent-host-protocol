@@ -68,6 +68,10 @@ class FakeBackend implements PiBackend {
 		return [{ provider: "faux", id: "faux-1" }];
 	}
 
+	async globalCommands() {
+		return [];
+	}
+
 	listSessions(): Promise<SessionInfo[]> {
 		return SessionManager.listAll(this.#dir);
 	}

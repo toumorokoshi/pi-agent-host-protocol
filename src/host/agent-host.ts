@@ -8,6 +8,7 @@ import {
 	type ChatAction,
 	CompletionItemKind,
 	type CompletionsResult,
+	type DirectoryCustomization,
 	type InitializeResult,
 	JsonRpcErrorCodes,
 	type ListSessionsResult,
@@ -32,7 +33,12 @@ import {
 	sessionUri,
 } from "../core/uris.ts";
 import type { PiBackend } from "../pi/agent.ts";
-import { COMPLETION_TRIGGER_CHARACTERS } from "../pi/customizations.ts";
+import {
+	COMPLETION_TRIGGER_CHARACTERS,
+	toCustomizations,
+	userCommands,
+	withFrontmatter,
+} from "../pi/customizations.ts";
 import { sweepInterval } from "../pi/idle.ts";
 import { toSessionModelInfo } from "../pi/models.ts";
 import { PiSession, restoredStatus, type SessionHostContext, type SessionSummaryChanges } from "../pi/pi-session.ts";
@@ -151,12 +157,33 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		});
 	}
 
-	/** Loads the model catalog into root state. */
+	/**
+	 * Loads the model catalog and pi's global skills and prompts (as the
+	 * agent's customizations, for clients composing a new session) into root
+	 * state.
+	 */
 	async refreshAgents(): Promise<void> {
-		const models = (await this.backend.models()).map(toSessionModelInfo);
+		const [models, customizations] = await Promise.all([
+			this.backend.models().then((list) => list.map(toSessionModelInfo)),
+			this.#agentCustomizations(),
+		]);
 		const [agent] = this.store.root.agents;
-		if (!agent || JSON.stringify(agent.models) === JSON.stringify(models)) return;
-		this.store.dispatch(ROOT_CHANNEL, { type: ActionType.RootAgentsChanged, agents: [{ ...agent, models }] });
+		if (!agent) return;
+		const next = { ...agent, models, ...(customizations ? { customizations } : {}) };
+		if (JSON.stringify(agent) === JSON.stringify(next)) return;
+		this.store.dispatch(ROOT_CHANNEL, { type: ActionType.RootAgentsChanged, agents: [next] });
+	}
+
+	/** pi's global commands as customizations; undefined (keep the current ones) when pi cannot list them. */
+	async #agentCustomizations(): Promise<DirectoryCustomization[] | undefined> {
+		try {
+			return toCustomizations(await withFrontmatter(userCommands(await this.backend.globalCommands())));
+		} catch (error) {
+			this.logger.warn("could not read pi's global commands", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return undefined;
+		}
 	}
 
 	connect(label: string, send: (text: string) => void): Connection {

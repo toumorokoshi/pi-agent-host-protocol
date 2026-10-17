@@ -7,7 +7,15 @@ import {
 	SessionManager,
 	type SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
-import type { PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
+import { cached } from "../core/cached.ts";
+import {
+	GLOBAL_COMMANDS_TTL_MS,
+	inEmptyDir,
+	type PiAgent,
+	type PiBackend,
+	type PiEvent,
+	type PromptInput,
+} from "./agent.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 
 export interface EmbeddedBackendOptions {
@@ -25,10 +33,13 @@ export class EmbeddedBackend implements PiBackend {
 	readonly mode = "embedded";
 	readonly #options: EmbeddedBackendOptions;
 	readonly #modelRuntime: ModelRuntime;
+	/** Reads the commands of an in-memory session whose extensions are not bound, so none of them start. */
+	readonly globalCommands: () => Promise<readonly SlashCommandInfo[]>;
 
 	private constructor(options: EmbeddedBackendOptions, modelRuntime: ModelRuntime) {
 		this.#options = options;
 		this.#modelRuntime = modelRuntime;
+		this.globalCommands = cached(GLOBAL_COMMANDS_TTL_MS, () => inEmptyDir((cwd) => this.#readCommands(cwd)));
 	}
 
 	static async create(options: EmbeddedBackendOptions = {}): Promise<EmbeddedBackend> {
@@ -65,6 +76,22 @@ export class EmbeddedBackend implements PiBackend {
 		// this side; extension dialogs resolve with their defaults.
 		await session.bindExtensions({ mode: "rpc" });
 		return new EmbeddedAgent(session, this.#modelRuntime);
+	}
+
+	async #readCommands(cwd: string): Promise<readonly SlashCommandInfo[]> {
+		const { agentDir, sessionOverrides } = this.#options;
+		const { session } = await createAgentSession({
+			cwd,
+			sessionManager: SessionManager.inMemory(cwd),
+			modelRuntime: this.#modelRuntime,
+			...(agentDir ? { agentDir } : {}),
+			...sessionOverrides,
+		});
+		try {
+			return await new EmbeddedAgent(session, this.#modelRuntime).commands();
+		} finally {
+			session.dispose();
+		}
 	}
 
 	async dispose(): Promise<void> {}

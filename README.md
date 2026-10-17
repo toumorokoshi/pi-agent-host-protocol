@@ -123,7 +123,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - **Live terminal sessions:** interactive `pi` processes share their sessions through the bundled pi extension, in both directions. A session is written by only one pi at a time: when a terminal opens a session the host is running, the host hands it over.
 - Read-only `resourceRead`, `resourceList` and `resourceResolve` on host-local `file:` URIs, used for browsing to pick a working directory. Write operations are refused.
 - **Terminals:** `createTerminal` and `disposeTerminal` run your `$SHELL` in a real pty in the requested directory. Keystrokes, resizes, renames, `clear` and exit codes all work, and `RootState.terminals` lists every terminal.
-- **Skills and prompt templates:** each session publishes the skills and prompt templates pi loaded as read-only customizations, and typing `/` at the start of a message completes them. See [docs/skills.md](docs/skills.md).
+- **Skills and prompt templates:** each session publishes the skills and prompt templates pi loaded as read-only customizations, the root state lists pi's global ones as the agent's customizations (for clients starting a session), and typing `/` at the start of a message completes them. See [docs/skills.md](docs/skills.md).
 - **Resource watches:** `createResourceWatch` watches files and directories with `@parcel/watcher`, recursively or not, with include/exclude globs. A watch is released when its last subscriber unsubscribes. See [docs/terminals-and-watches.md](docs/terminals-and-watches.md).
 
 ### Known limitations

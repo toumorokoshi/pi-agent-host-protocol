@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type SessionInfo, SessionManager } from "@earendil-works/pi-coding-agent";
+import { type SessionInfo, SessionManager, type SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { cached } from "../core/cached.ts";
 import { type Logger, silentLogger } from "../core/logger.ts";
-import type { PiAgent, PiBackend } from "./agent.ts";
+import { GLOBAL_COMMANDS_TTL_MS, inEmptyDir, type PiAgent, type PiBackend } from "./agent.ts";
 import type { PiModel } from "./models.ts";
 import { childrenOf, newChildren, type ProcessTable, readProcessTable } from "./processes.ts";
 import { connectRpcAgent, type RpcAgent } from "./rpc-agent.ts";
@@ -41,24 +42,16 @@ export class RpcBackend implements PiBackend {
 	readonly #options: RpcBackendOptions;
 	readonly #logger: Logger;
 	readonly #agents = new Set<RpcAgent>();
-	#models: { at: number; models: Promise<readonly PiModel[]> } | undefined;
+	/** Lists models through a short-lived child, cached briefly because clients ask on every `initialize`. */
+	readonly models: () => Promise<readonly PiModel[]>;
+	/** Lists commands through a short-lived child in an empty folder. */
+	readonly globalCommands: () => Promise<readonly SlashCommandInfo[]>;
 
 	constructor(options: RpcBackendOptions = {}) {
 		this.#options = options;
 		this.#logger = options.logger ?? silentLogger;
-	}
-
-	/** Lists models through a short-lived child, cached briefly because clients ask on every `initialize`. */
-	models(): Promise<readonly PiModel[]> {
-		const now = Date.now();
-		if (!this.#models || now - this.#models.at > MODELS_TTL_MS) {
-			const models = this.#fetchModels();
-			this.#models = { at: now, models };
-			models.catch(() => {
-				if (this.#models?.models === models) this.#models = undefined;
-			});
-		}
-		return this.#models.models;
+		this.models = cached(MODELS_TTL_MS, () => this.#fetchModels());
+		this.globalCommands = cached(GLOBAL_COMMANDS_TTL_MS, () => inEmptyDir((cwd) => this.#fetchCommands(cwd)));
 	}
 
 	listSessions(): Promise<SessionInfo[]> {
@@ -121,6 +114,16 @@ export class RpcBackend implements PiBackend {
 		try {
 			const { models } = await child.request<{ models: PiModel[] }>({ type: "get_available_models" });
 			return models;
+		} finally {
+			await child.close();
+		}
+	}
+
+	async #fetchCommands(cwd: string): Promise<SlashCommandInfo[]> {
+		const { channel: child } = this.#spawn(cwd, ["--no-session"], { purpose: "commands" });
+		try {
+			const { commands } = await child.request<{ commands: SlashCommandInfo[] }>({ type: "get_commands" });
+			return commands;
 		} finally {
 			await child.close();
 		}
