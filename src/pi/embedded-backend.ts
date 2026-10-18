@@ -17,6 +17,7 @@ import {
 	type PromptInput,
 } from "./agent.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
+import { truncationTarget } from "./truncation.ts";
 
 export interface EmbeddedBackendOptions {
 	/** pi agent directory (defaults to pi's own: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`). */
@@ -129,6 +130,13 @@ class EmbeddedAgent implements PiAgent {
 
 	resume(): Promise<void> {
 		return continueAfterError(this.#session);
+	}
+
+	async truncate(keep: number): Promise<void> {
+		const target = truncationTarget(this.#session.sessionManager.getBranch(), keep);
+		if (!target) return;
+		const { cancelled } = await this.#session.navigateTree(target.id);
+		if (cancelled) throw new Error("pi cancelled the truncation");
 	}
 
 	async steer({ text, images }: PromptInput): Promise<void> {

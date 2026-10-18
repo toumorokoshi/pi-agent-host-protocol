@@ -72,6 +72,7 @@ The host reads sessions with pi's SDK (`SessionManager.listAll`) and, in rpc mod
 | Crash isolation | per session | none |
 | First-turn latency | child startup (about 0.7 s) | none |
 | Turn resume | `/ahp-resume` extension command, runs through pi's full run loop | `context_edit` + `agent.continue()`, skips pi's run loop |
+| Truncation (`chat/truncated`) | `/ahp-truncate <entryId>` extension command, leaf checked with `get_entries` | `AgentSession.navigateTree` |
 
 ## Trade-offs
 

@@ -56,6 +56,14 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
 - **Lost on restart:** resumability is kept in memory only. After a host restart, a turn reloaded from history that ended in an error cannot be resumed; send a new message instead.
 - **Usage:** the resumed run's token usage replaces the turn's usage rather than adding to it.
 
+## Truncation (`chat/truncated`)
+
+- **Not for pi terminal sessions:** while an interactive pi drives a session through the bridge, `chat/truncated` is rejected, because extensions cannot invoke the `/ahp-truncate` command by name. The bridge would need its own way to call `navigateTree`. This rejection has no test yet.
+- **Mapping by position:** the cut is found by counting the kept turns that pi has a user message for. A turn whose prompt pi recorded without the host seeing it (none known today) would shift the cut by one. Turns loaded from history could be matched by id instead, since their ids are pi's entry ids.
+- **Compaction:** a cut before a compaction entry moves the leaf before it, so pi's context is rebuilt from the uncompacted history and may compact again on the next run.
+- **A failed truncation** is only logged; the client learns of it when its next turn fails.
+- **Racing a queued message:** a queued message can start in the moment between the aborted run settling and the client's `chat/turnStarted` arriving, the same race a cancellation followed by a new message has.
+
 ## Skills and prompt templates
 
 - **No refresh on `/reload`:** the list is read once per pi process. Skills added later, or reloaded in a pi terminal with `/reload`, appear only when pi next starts for that session.

@@ -9,6 +9,13 @@
  * model request. The session file keeps both, the same way the embedded
  * backend's `context_edit` keeps the raw transcript.
  *
+ * pi's RPC protocol has no command that moves the session's leaf either, so
+ * `chat/truncated` sends `/ahp-truncate <entryId>`, which navigates pi's
+ * session tree to that user message, moving the leaf to its parent (as pi's
+ * own `/tree` does to re-edit a message). Nothing is deleted: the dropped
+ * turns stay in the file on an abandoned branch. The host checks the leaf
+ * afterwards, since a failed extension command does not fail the request.
+ *
  * Self-contained on purpose: `pi --mode rpc` children load this file on its
  * own, so it has no runtime imports (type imports are erased).
  */
@@ -16,6 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export const RESUME_COMMAND = "ahp-resume";
 export const RESUME_MARKER = "ahp-resume";
+export const TRUNCATE_COMMAND = "ahp-truncate";
 
 interface MessageLike {
 	role?: string;
@@ -44,6 +52,12 @@ export default function ahpResume(pi: ExtensionAPI): void {
 	pi.registerCommand(RESUME_COMMAND, {
 		description: "Continue after a model-server error (used by pi-agent-host-protocol)",
 		handler: async () => resumeRun(pi),
+	});
+	pi.registerCommand(TRUNCATE_COMMAND, {
+		description: "Re-edit from a user message: drop it and what follows (used by pi-agent-host-protocol)",
+		handler: async (args, ctx) => {
+			await ctx.navigateTree(args.trim());
+		},
 	});
 	pi.on("context", (event) => {
 		const messages = omitResumedErrors(event.messages as MessageLike[]) as typeof event.messages;

@@ -57,6 +57,13 @@ export interface PiAgent {
 	prompt(input: PromptInput): Promise<void>;
 	/** Continues after a run that ended in a model-provider error, without a new user message. */
 	resume(): Promise<void>;
+	/**
+	 * Moves the session back so only its first `keep` user messages, and what
+	 * followed them, remain in context; later ones stay in the file on an
+	 * abandoned branch. Call only while no run is in flight. Rejects if pi
+	 * did not move.
+	 */
+	truncate(keep: number): Promise<void>;
 	steer(input: PromptInput): Promise<void>;
 	abort(): Promise<void>;
 	/** Selects a model by provider and id. Rejects if pi does not know it. */

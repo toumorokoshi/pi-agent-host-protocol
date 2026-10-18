@@ -35,6 +35,7 @@ import {
 import { turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
+import { recordedUserTurns } from "./truncation.ts";
 import { TurnMapper, type TurnOutcome } from "./turn-mapper.ts";
 
 export interface SessionHostContext {
@@ -109,6 +110,12 @@ export class PiSession {
 	#resumableTurn: string | undefined;
 	/** Runs started per turn, so a resumed run gets fresh response part ids. */
 	readonly #attempts = new Map<string, number>();
+	/** Turns whose prompt never reached pi, so pi has no user message for them (see `recordedUserTurns`). */
+	readonly #unrecorded = new Set<string>();
+	/** Why the last truncation failed; the next run fails with it rather than run on the untruncated context. */
+	#truncationError: string | undefined;
+	/** The interactive pi driving this session through the bridge, if any. */
+	#tuiAgent: PiAgent | undefined;
 	/** Skills and prompt templates of the current agent, loaded when it is first observed. */
 	#commands: Promise<readonly UserCommand[]> | undefined;
 	#disposed = false;
@@ -165,6 +172,7 @@ export class PiSession {
 				: ctx.backend.newSessionManager(info.cwd, info.sessionId);
 		const session = PiSession.#fromHistory(ctx, manager, entries, info.name, info.sessionId, info.cwd);
 		session.#agent = Promise.resolve(session.#observe(agent));
+		session.#tuiAgent = agent;
 		return session;
 	}
 
@@ -291,6 +299,13 @@ export class PiSession {
 				}
 				return undefined;
 			}
+			case ActionType.ChatTruncated:
+				// The bridge cannot run the extension command that moves pi's leaf.
+				if (this.#tuiAgent) return "Not supported while the session is open in a pi terminal";
+				if (action.turnId !== undefined && !chat.turns.some((turn) => turn.id === action.turnId)) {
+					return "Unknown turn";
+				}
+				return undefined;
 			default:
 				return `Unsupported action: ${action.type}`;
 		}
@@ -318,6 +333,9 @@ export class PiSession {
 				break;
 			case ActionType.ChatPendingMessageSet:
 				this.#consumePending();
+				break;
+			case ActionType.ChatTruncated:
+				this.#truncate();
 				break;
 			case ActionType.ChatIsArchivedChanged:
 				this.#ctx.archive.setArchived(this.id, action.isArchived);
@@ -369,6 +387,7 @@ export class PiSession {
 	adoptAgent(agent: PiAgent): void {
 		const previous = this.#agent;
 		this.#agent = Promise.resolve(this.#observe(agent));
+		this.#tuiAgent = agent;
 		if (!previous) return;
 		const lastRun = this.#lastRun;
 		void previous
@@ -388,6 +407,7 @@ export class PiSession {
 	agentDetached(agent: PiAgent, sessionFile: string | undefined): void {
 		void this.#agent?.then((current) => {
 			if (current !== agent) return;
+			if (this.#tuiAgent === agent) this.#tuiAgent = undefined;
 			const turn = this.#externalRun;
 			this.#externalRun = undefined;
 			if (turn) this.#finishExternalTurn(turn, { kind: "error", message: "pi closed the session" });
@@ -521,12 +541,15 @@ export class PiSession {
 		let turn = first;
 		let outcome: TurnOutcome = { kind: "cancelled" };
 		let unsubscribe: (() => void) | undefined;
+		// The first user message of a prompt run is the prompt itself; later ones were steered in.
+		let promptSeen = run.kind !== "prompt";
 		try {
 			if (!turn.cancelledByClient) {
 				const agent = await this.#ensureAgent();
+				const truncationError = this.#truncationError;
+				this.#truncationError = undefined;
+				if (truncationError) throw new Error(`pi could not drop the edited turns: ${truncationError}`);
 				if (run.kind === "prompt") await this.#applyModel(agent, run.message);
-				// The first user message of a prompt run is the prompt itself; later ones were steered in.
-				let promptSeen = run.kind !== "prompt";
 				unsubscribe = agent.subscribe((event) => {
 					const user = userMessageStarted(event);
 					if (user !== undefined) {
@@ -560,6 +583,7 @@ export class PiSession {
 			this.#steered = [];
 			unsubscribe?.();
 		}
+		if (!promptSeen) this.#unrecorded.add(first.id);
 		this.#hasTurns = true;
 		if (!turn.cancelledByClient) turn.mapper.finish(outcome, Date.now() - turn.startedAt);
 		if (!turn.cancelledByClient && outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;
@@ -577,6 +601,37 @@ export class PiSession {
 		this.#touch();
 		this.#syncSummary();
 		this.#consumePending();
+	}
+
+	/**
+	 * Side effect of an accepted `chat/truncated` (already applied to state):
+	 * ends the running turn the reducer dropped, as a cancellation does, then
+	 * moves pi back to the kept turns once the aborted run has settled. Runs
+	 * queue behind it, so a `chat/turnStarted` sent right after (an edited
+	 * message) runs on the truncated context. See specs/truncation.md.
+	 */
+	#truncate(): void {
+		const chat = this.#ctx.store.chat(this.id);
+		if (!chat) return;
+		const keep = recordedUserTurns(chat.turns, this.#unrecorded);
+		const running = this.#turn;
+		if (running) {
+			running.cancelledByClient = true;
+			this.#turn = undefined;
+			this.#ctx.activityChanged();
+			void this.#agent?.then((agent) => agent.abort()).catch(() => {});
+		}
+		this.#resumableTurn = undefined;
+		this.#truncationError = undefined;
+		this.#ctx.logger.debug("chat truncated by client", { session: this.id, keep, turns: chat.turns.length });
+		this.#lastRun = this.#lastRun
+			.then(async () => (await this.#ensureAgent()).truncate(keep))
+			.catch((error) => {
+				const message = error instanceof Error ? error.message : String(error);
+				this.#truncationError = message;
+				this.#ctx.logger.warn("could not truncate the session", { session: this.id, error: message });
+			});
+		this.#syncSummary();
 	}
 
 	/**

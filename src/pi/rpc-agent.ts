@@ -1,9 +1,10 @@
 import type { JsonAgentSessionEvent, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { Logger } from "../core/logger.ts";
 import type { PiAgent, PiEvent, PromptInput } from "./agent.ts";
-import { RESUME_COMMAND } from "./extensions/ahp-resume.ts";
+import { RESUME_COMMAND, TRUNCATE_COMMAND } from "./extensions/ahp-resume.ts";
 import type { ThinkingLevel } from "./models.ts";
 import type { RpcChannel, RpcCommand, RpcRecord } from "./rpc-channel.ts";
+import { branchTo, type EntryLike, truncationTarget } from "./truncation.ts";
 
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 
@@ -32,12 +33,24 @@ export async function connectRpcAgent(
 			channel.request<RpcState>({ type: "get_state" }),
 			channel.request<{ commands: Array<{ name: string }> }>({ type: "get_commands" }),
 		]);
-		const canResume = commands.commands.some((command) => command.name === RESUME_COMMAND);
-		return new RpcAgent(channel, state, canResume, logger, options);
+		const has = (name: string) => commands.commands.some((command) => command.name === name);
+		return new RpcAgent(
+			channel,
+			state,
+			{ resume: has(RESUME_COMMAND), truncate: has(TRUNCATE_COMMAND) },
+			logger,
+			options,
+		);
 	} catch (error) {
 		await channel.close();
 		throw error;
 	}
+}
+
+/** Which of the host's extension commands the pi on the other end loaded. */
+export interface RpcCapabilities {
+	resume: boolean;
+	truncate: boolean;
 }
 
 interface SettleWaiter {
@@ -51,7 +64,7 @@ interface SettleWaiter {
  */
 export class RpcAgent implements PiAgent {
 	readonly #child: RpcChannel;
-	readonly #canResume: boolean;
+	readonly #capabilities: RpcCapabilities;
 	readonly #logger: Logger;
 	readonly #listeners = new Set<(event: PiEvent) => void>();
 	readonly #settleWaiters = new Set<SettleWaiter>();
@@ -59,10 +72,16 @@ export class RpcAgent implements PiAgent {
 	#thinkingLevel: string | undefined;
 	readonly backgroundProcesses: (() => Promise<number[]>) | undefined;
 
-	constructor(child: RpcChannel, state: RpcState, canResume: boolean, logger: Logger, options: RpcAgentOptions = {}) {
+	constructor(
+		child: RpcChannel,
+		state: RpcState,
+		capabilities: RpcCapabilities,
+		logger: Logger,
+		options: RpcAgentOptions = {},
+	) {
 		this.#child = child;
 		this.backgroundProcesses = options.backgroundProcesses;
-		this.#canResume = canResume;
+		this.#capabilities = capabilities;
 		this.#logger = logger;
 		this.#model = state.model && { provider: state.model.provider, id: state.model.id };
 		this.#thinkingLevel = state.thinkingLevel;
@@ -95,9 +114,28 @@ export class RpcAgent implements PiAgent {
 	}
 
 	async resume(): Promise<void> {
-		if (!this.#canResume) throw new Error("pi did not load the pi-agent-host-protocol resume extension");
+		if (!this.#capabilities.resume) throw new Error("pi did not load the pi-agent-host-protocol resume extension");
 		// The command itself is "handled"; the run it triggers starts right after.
 		await this.#runUntilSettled({ type: "prompt", message: `/${RESUME_COMMAND}` }, true);
+	}
+
+	async truncate(keep: number): Promise<void> {
+		if (!this.#capabilities.truncate) throw new Error("pi did not load the pi-agent-host-protocol extension");
+		const before = await this.#branch();
+		const target = truncationTarget(before, keep);
+		if (!target) return;
+		// pi awaits the command's handler before answering, but reports its errors as events only.
+		await this.#child.request({ type: "prompt", message: `/${TRUNCATE_COMMAND} ${target.id}` });
+		const leaf = (await this.#branch()).at(-1)?.id ?? null;
+		if (leaf !== target.parentId) throw new Error("pi did not move back to the edited message");
+	}
+
+	/** The entries of pi's current branch, root first. */
+	async #branch(): Promise<EntryLike[]> {
+		const { entries, leafId } = await this.#child.request<{ entries: EntryLike[]; leafId: string | null }>({
+			type: "get_entries",
+		});
+		return branchTo(entries, leafId);
 	}
 
 	async steer({ text, images }: PromptInput): Promise<void> {
