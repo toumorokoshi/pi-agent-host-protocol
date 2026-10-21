@@ -2,9 +2,9 @@ import { existsSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type SessionInfo, SessionManager, type SlashCommandInfo } from "@earendil-works/pi-coding-agent";
-import { cached } from "../core/cached.ts";
+import { cached, cachedBy } from "../core/cached.ts";
 import { type Logger, silentLogger } from "../core/logger.ts";
-import { GLOBAL_COMMANDS_TTL_MS, inEmptyDir, type PiAgent, type PiBackend } from "./agent.ts";
+import { COMMANDS_TTL_MS, inEmptyDir, type PiAgent, type PiBackend } from "./agent.ts";
 import type { PiModel } from "./models.ts";
 import { childrenOf, newChildren, type ProcessTable, readProcessTable } from "./processes.ts";
 import { connectRpcAgent, type RpcAgent } from "./rpc-agent.ts";
@@ -46,12 +46,15 @@ export class RpcBackend implements PiBackend {
 	readonly models: () => Promise<readonly PiModel[]>;
 	/** Lists commands through a short-lived child in an empty folder. */
 	readonly globalCommands: () => Promise<readonly SlashCommandInfo[]>;
+	/** Lists commands through a short-lived child in the folder, without a session. */
+	readonly folderCommands: (cwd: string) => Promise<readonly SlashCommandInfo[]>;
 
 	constructor(options: RpcBackendOptions = {}) {
 		this.#options = options;
 		this.#logger = options.logger ?? silentLogger;
 		this.models = cached(MODELS_TTL_MS, () => this.#fetchModels());
-		this.globalCommands = cached(GLOBAL_COMMANDS_TTL_MS, () => inEmptyDir((cwd) => this.#fetchCommands(cwd)));
+		this.globalCommands = cached(COMMANDS_TTL_MS, () => inEmptyDir((cwd) => this.#fetchCommands(cwd)));
+		this.folderCommands = cachedBy(COMMANDS_TTL_MS, (cwd: string) => this.#fetchCommands(cwd));
 	}
 
 	listSessions(): Promise<SessionInfo[]> {

@@ -7,15 +7,8 @@ import {
 	SessionManager,
 	type SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
-import { cached } from "../core/cached.ts";
-import {
-	GLOBAL_COMMANDS_TTL_MS,
-	inEmptyDir,
-	type PiAgent,
-	type PiBackend,
-	type PiEvent,
-	type PromptInput,
-} from "./agent.ts";
+import { cached, cachedBy } from "../core/cached.ts";
+import { COMMANDS_TTL_MS, inEmptyDir, type PiAgent, type PiBackend, type PiEvent, type PromptInput } from "./agent.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 import { truncationTarget } from "./truncation.ts";
 
@@ -36,11 +29,14 @@ export class EmbeddedBackend implements PiBackend {
 	readonly #modelRuntime: ModelRuntime;
 	/** Reads the commands of an in-memory session whose extensions are not bound, so none of them start. */
 	readonly globalCommands: () => Promise<readonly SlashCommandInfo[]>;
+	/** The same, for an in-memory session in the folder. */
+	readonly folderCommands: (cwd: string) => Promise<readonly SlashCommandInfo[]>;
 
 	private constructor(options: EmbeddedBackendOptions, modelRuntime: ModelRuntime) {
 		this.#options = options;
 		this.#modelRuntime = modelRuntime;
-		this.globalCommands = cached(GLOBAL_COMMANDS_TTL_MS, () => inEmptyDir((cwd) => this.#readCommands(cwd)));
+		this.globalCommands = cached(COMMANDS_TTL_MS, () => inEmptyDir((cwd) => this.#readCommands(cwd)));
+		this.folderCommands = cachedBy(COMMANDS_TTL_MS, (cwd: string) => this.#readCommands(cwd));
 	}
 
 	static async create(options: EmbeddedBackendOptions = {}): Promise<EmbeddedBackend> {

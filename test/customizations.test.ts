@@ -21,7 +21,7 @@ import {
 	withFrontmatterFields,
 } from "../src/pi/customizations.ts";
 import { promptInput } from "../src/pi/pi-session.ts";
-import { newSession, PI_MODES, startHost, TestClient, type TestHost } from "./helpers.ts";
+import { newSession, PI_MODES, startHost, startTurn, TestClient, type TestHost } from "./helpers.ts";
 
 function info(name: string, source: SlashCommandInfo["source"], path: string, baseDir?: string): SlashCommandInfo {
 	return {
@@ -385,6 +385,65 @@ for (const mode of PI_MODES) {
 				{ items: [] },
 			);
 		});
+	});
+}
+
+for (const mode of PI_MODES) {
+	test(`a session from history lists its folder's skills without starting pi (${mode})`, async () => {
+		const first = await startHost({ mode });
+		const skill = async (path: string, name: string) => {
+			await mkdir(join(path, name), { recursive: true });
+			await writeFile(join(path, name, "SKILL.md"), `---\nname: ${name}\ndescription: A skill\n---\nSay ${name}.\n`);
+		};
+		await skill(join(first.dir, "agent", "skills"), "global");
+		await skill(join(first.cwd, ".pi", "skills"), "local");
+		const client = await TestClient.connect(first.url);
+		await client.initialize();
+		const { session, chat } = await newSession(first, client);
+		first.faux.setResponses([fauxAssistantMessage("Done.")]);
+		const turnId = startTurn(client, chat, "Hello");
+		await client.waitFor((m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turnId);
+		client.close();
+		await first.stop();
+
+		const second = await startHost({ dir: first.dir, mode });
+		const { backend } = second.host;
+		let started = 0;
+		const startAgent = backend.startAgent.bind(backend);
+		backend.startAgent = (...args) => {
+			started++;
+			return startAgent(...args);
+		};
+		const reconnected = await TestClient.connect(second.url);
+		try {
+			await reconnected.initialize();
+			await reconnected.subscribe(session);
+			if (!reconnected.sessions.get(session)?.customizations?.length) {
+				await reconnected.waitForAction("session/customizationsChanged");
+			}
+			const names = (dir: string) => {
+				const entry = reconnected.sessions.get(session)?.customizations?.find((c) => c.uri === fileUri(dir));
+				return entry && "children" in entry ? entry.children?.map((child) => child.name) : undefined;
+			};
+			assert.deepEqual(names(join(second.dir, "agent", "skills")), ["global"]);
+			// pi's rpc mode skips an untrusted project's skills; the embedded
+			// test settings trust it.
+			const local = mode === "embedded";
+			assert.deepEqual(names(join(second.cwd, ".pi", "skills")), local ? ["local"] : undefined);
+			const result = await reconnected.request("completions", {
+				kind: "userMessage",
+				channel: chat,
+				text: "/",
+				offset: 1,
+			});
+			const offered = result.items.map((item: { insertText: string }) => item.insertText);
+			assert.ok(offered.includes("/skill:global "), offered.join());
+			assert.equal(offered.includes("/skill:local "), local);
+			assert.equal(started, 0, "no pi agent was started");
+		} finally {
+			reconnected.close();
+			await second.cleanup();
+		}
 	});
 }
 

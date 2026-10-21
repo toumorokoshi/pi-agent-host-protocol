@@ -30,6 +30,10 @@ class FakeBackend implements PiBackend {
 		return [];
 	}
 
+	async folderCommands() {
+		return [];
+	}
+
 	listSessions(): Promise<SessionInfo[]> {
 		return SessionManager.listAll(this.#dir);
 	}

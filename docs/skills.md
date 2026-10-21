@@ -21,7 +21,7 @@ Sessions the host starts run `pi --mode rpc`, which cannot ask whether to trust 
 
 ## When the list updates
 
-The list is read when pi starts for a session. A session opened from history has no pi yet, so its list appears on the first message or the first `/` completion. Skills added later show up the next time pi starts for that session.
+The list is read when pi starts for a session. A session opened from history has no pi yet, so the host lists its folder's skills as soon as a client opens the session, without starting pi for it, and `/` completes from that list. Skills added later show up the next time pi starts for that session (or the session is opened again after 30 seconds).
 
 ## Troubleshooting: no completions in VS Code
 

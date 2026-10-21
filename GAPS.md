@@ -67,7 +67,7 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
 ## Skills and prompt templates
 
 - **No refresh on `/reload`:** the list is read once per pi process. Skills added later, or reloaded in a pi terminal with `/reload`, appear only when pi next starts for that session.
-- **Sessions from history** show no customizations until their first turn or `/` completion, because the list comes from a running pi.
+- **Sessions from history** list their folder's commands from a short-lived pi (rpc mode) when a client opens them, so a `/` typed right after opening waits for one pi start (a few hundred milliseconds locally, longer where pi's extensions start slowly). The list is not kept across host restarts; a cache on disk, refreshed in the background, would make it instant there too. In embedded mode the folder list misses skills that extensions add until the session's first turn.
 - **Read-only:** `session/customizationToggled` is rejected (pi cannot disable one skill per session), and clients cannot create skills in the listed directories.
 - **Root-level listing is global only:** `AgentInfo.customizations` holds pi's global skills and prompt templates (read from an empty folder), so a new session's project skills appear only once it starts. In embedded mode, skills added by extensions are left out there. Each refresh costs a short-lived pi in rpc mode (cached for 30 seconds).
 - **Project trust in host sessions:** `pi --mode rpc` skips project skills unless the project is trusted (`/trust` or `defaultProjectTrust: "always"`). The host could offer a setting to pass `--approve`.

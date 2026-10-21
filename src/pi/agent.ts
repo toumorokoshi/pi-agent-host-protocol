@@ -100,11 +100,20 @@ export interface PiBackend {
 	 * an agent started in an empty folder. No session is saved.
 	 */
 	globalCommands(): Promise<readonly SlashCommandInfo[]>;
+	/**
+	 * pi's commands in `cwd`: what `PiAgent.commands()` lists for an agent
+	 * started there, project resources included, without starting a
+	 * session's agent. No session is saved.
+	 */
+	folderCommands(cwd: string): Promise<readonly SlashCommandInfo[]>;
 	dispose(): Promise<void>;
 }
 
-/** How long backends reuse `globalCommands()`: the host asks on every `initialize`. */
-export const GLOBAL_COMMANDS_TTL_MS = 30_000;
+/**
+ * How long backends reuse `globalCommands()` and `folderCommands()`: the
+ * host asks on every `initialize` and for every session it loads.
+ */
+export const COMMANDS_TTL_MS = 30_000;
 
 /** Runs `run` in a new empty temporary folder, removed afterwards. */
 export async function inEmptyDir<T>(run: (dir: string) => Promise<T>): Promise<T> {

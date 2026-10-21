@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry, SessionManager, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import {
 	ActionType,
 	type ChatAction,
@@ -116,7 +116,10 @@ export class PiSession {
 	#truncationError: string | undefined;
 	/** The interactive pi driving this session through the bridge, if any. */
 	#tuiAgent: PiAgent | undefined;
-	/** Skills and prompt templates of the current agent, loaded when it is first observed. */
+	/**
+	 * Skills and prompt templates of the current agent, loaded when it is
+	 * first observed; before that, those read for the session's folder.
+	 */
 	#commands: Promise<readonly UserCommand[]> | undefined;
 	#disposed = false;
 	#hasTurns: boolean;
@@ -150,10 +153,16 @@ export class PiSession {
 		return session;
 	}
 
-	/** An existing pi session file. History is loaded eagerly; the agent starts on the first turn. */
+	/**
+	 * An existing pi session file. History is loaded eagerly; the agent starts
+	 * on the first turn. Its folder's commands are read meanwhile (without an
+	 * agent) and published, so `/` completes before pi starts.
+	 */
 	static open(ctx: SessionHostContext, path: string): PiSession {
 		const manager = ctx.backend.openSessionManager(path);
-		return PiSession.#fromHistory(ctx, manager, manager.getBranch(), manager.getSessionName());
+		const session = PiSession.#fromHistory(ctx, manager, manager.getBranch(), manager.getSessionName());
+		session.#loadCommands(ctx.backend.folderCommands(session.cwd));
+		return session;
 	}
 
 	/**
@@ -247,13 +256,18 @@ export class PiSession {
 	}
 
 	/**
-	 * Slash-command completions for a message being typed. Starts the agent
-	 * if the session has none yet, since its commands come from pi.
+	 * Slash-command completions for a message being typed: the agent's
+	 * commands, else those read for the session's folder. Starts the agent
+	 * only when neither could be read, since the commands come from pi.
 	 */
 	async completions(text: string, offset: number): Promise<CompletionItem[]> {
 		this.#touch();
-		if (!this.#commands) await this.#ensureAgent();
-		return slashCompletions((await this.#commands) ?? [], text, offset);
+		let commands = await this.#commands?.catch(() => undefined);
+		if (!commands) {
+			await this.#ensureAgent();
+			commands = await this.#commands;
+		}
+		return slashCompletions(commands ?? [], text, offset);
 	}
 
 	/** Returns a rejection reason for a client-dispatched chat action, or `undefined` to accept it. */
@@ -662,7 +676,7 @@ export class PiSession {
 		if (!this.#observed.has(agent)) {
 			this.#observed.add(agent);
 			agent.subscribe((event) => this.#onAgentEvent(event));
-			this.#loadCommands(agent);
+			this.#loadCommands(agent.commands());
 		}
 		return agent;
 	}
@@ -673,9 +687,14 @@ export class PiSession {
 		return promptInput(message, await skillBlocks(referencedSkills(message, commands)));
 	}
 
-	/** Reads the agent's skills and prompt templates and publishes them as session customizations. */
-	#loadCommands(agent: PiAgent): void {
-		const loaded = agent.commands().then((commands) => withFrontmatter(userCommands(commands)));
+	/**
+	 * Keeps the skills and prompt templates in `commands` (an agent's, or
+	 * those read for the session's folder) and publishes them as session
+	 * customizations. A later load replaces an earlier one, even when the
+	 * earlier one finishes last.
+	 */
+	#loadCommands(commands: Promise<readonly SlashCommandInfo[]>): void {
+		const loaded = commands.then((list) => withFrontmatter(userCommands(list)));
 		this.#commands = loaded;
 		loaded
 			.then((commands) => {
