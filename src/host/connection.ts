@@ -37,8 +37,13 @@ export class Connection {
 	readonly #send: (text: string) => void;
 	readonly #handler: ConnectionHandler;
 	readonly #logger: Logger;
-	/** Subscribed channels: canonical URI → the spelling this client used. */
-	readonly #subscriptions = new Map<string, string>();
+	/**
+	 * Subscribed channels: canonical URI → the spellings this client used.
+	 * A client may hold one channel under two spellings (shireitou watches a
+	 * new session as `ahp-session:/<id>`, then subscribes `pi:/<id>`), and
+	 * dropping one must keep the other.
+	 */
+	readonly #subscriptions = new Map<string, Set<string>>();
 	#queue: Promise<void> = Promise.resolve();
 	#closed = false;
 
@@ -69,30 +74,42 @@ export class Connection {
 	}
 
 	subscribe(canonical: string, spelling: string): void {
-		this.#subscriptions.set(canonical, spelling);
+		const spellings = this.#subscriptions.get(canonical) ?? new Set();
+		spellings.add(spelling);
+		this.#subscriptions.set(canonical, spellings);
 	}
 
+	/**
+	 * Drops the subscription spelled `channel`. A channel unsubscribed by a
+	 * spelling this client never used (such as its canonical URI) is dropped
+	 * under every spelling.
+	 */
 	unsubscribe(channel: string, canonical: string | undefined): void {
-		if (canonical) this.#subscriptions.delete(canonical);
-		for (const [key, spelling] of this.#subscriptions) {
-			if (spelling === channel) this.#subscriptions.delete(key);
+		let found = false;
+		for (const [key, spellings] of this.#subscriptions) {
+			if (!spellings.delete(channel)) continue;
+			found = true;
+			if (spellings.size === 0) this.#subscriptions.delete(key);
 		}
+		if (!found && canonical) this.#subscriptions.delete(canonical);
 	}
 
 	isSubscribed(canonical: string): boolean {
 		return this.#subscriptions.has(canonical);
 	}
 
-	/** Rewrites an envelope's channel into this client's spelling, or `undefined` if not deliverable. */
-	present(envelope: ActionEnvelope): ActionEnvelope | undefined {
-		const spelling = this.#subscriptions.get(envelope.channel);
-		if (spelling === undefined || !actionVisibleTo(envelope.action, this.protocolVersion)) return undefined;
-		return spelling === envelope.channel ? envelope : { ...envelope, channel: spelling };
+	/** The envelope once per spelling this client subscribed with (none if not deliverable). */
+	present(envelope: ActionEnvelope): ActionEnvelope[] {
+		const spellings = this.#subscriptions.get(envelope.channel);
+		if (!spellings || !actionVisibleTo(envelope.action, this.protocolVersion)) return [];
+		return [...spellings].map((spelling) =>
+			spelling === envelope.channel ? envelope : { ...envelope, channel: spelling },
+		);
 	}
 
 	deliver(envelope: ActionEnvelope): void {
-		const presented = this.present(envelope);
-		if (presented) this.#write({ jsonrpc: "2.0", method: "action", params: presented });
+		for (const presented of this.present(envelope))
+			this.#write({ jsonrpc: "2.0", method: "action", params: presented });
 	}
 
 	/** Sends an envelope regardless of subscriptions (rejections go only to their origin). */

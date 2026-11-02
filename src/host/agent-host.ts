@@ -1,7 +1,6 @@
 import { stat } from "node:fs/promises";
 import type { SessionEntry, SessionInfo } from "@earendil-works/pi-coding-agent";
 import {
-	type ActionEnvelope,
 	type ActionOrigin,
 	ActionType,
 	AhpErrorCodes,
@@ -526,9 +525,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			if (canonical) connection.subscribe(canonical, uri);
 			else missing.push(uri);
 		}
-		const actions = replay
-			.map((envelope) => connection.present(envelope))
-			.filter((envelope): envelope is ActionEnvelope => envelope !== undefined);
+		const actions = replay.flatMap((envelope) => connection.present(envelope));
 		const result: ReconnectResult = { type: ReconnectResultType.Replay, actions, missing };
 		return reply(result);
 	}
