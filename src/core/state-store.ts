@@ -19,7 +19,7 @@ import {
 	type TerminalState,
 	terminalReducer,
 } from "@microsoft/agent-host-protocol";
-import { chatUri, parseChannel, ROOT_CHANNEL, sessionUri } from "./uris.ts";
+import { type ChannelRef, type ChatRef, chatUri, parseChannel, ROOT_CHANNEL, sessionUri } from "./uris.ts";
 
 const DEFAULT_REPLAY_CAPACITY = 10_000;
 
@@ -44,7 +44,11 @@ function reduceExact(channel: ExactChannel, action: StateAction): ExactChannel {
 export class StateStore {
 	#root: RootState;
 	readonly #sessions = new Map<string, SessionState>();
+	/** Chats by the id of the pi session backing them (`ChatRef.chatId`). */
 	readonly #chats = new Map<string, ChatState>();
+	/** Forked chats: their client-chosen URIs, and the reverse. */
+	readonly #forkRefs = new Map<string, ChatRef>();
+	readonly #forkUris = new Map<string, string>();
 	readonly #exact = new Map<string, ExactChannel>();
 	readonly #listeners = new Set<EnvelopeListener>();
 	readonly #replay: ActionEnvelope[] = [];
@@ -68,8 +72,9 @@ export class StateStore {
 		return this.#sessions.get(id);
 	}
 
-	chat(sessionId: string): ChatState | undefined {
-		return this.#chats.get(sessionId);
+	/** The chat backed by the pi session `chatId` (for a default chat, the session's id). */
+	chat(chatId: string): ChatState | undefined {
+		return this.#chats.get(chatId);
 	}
 
 	sessionIds(): string[] {
@@ -82,9 +87,36 @@ export class StateStore {
 		this.#chats.set(id, chat);
 	}
 
+	/**
+	 * Registers a forked chat at its client-chosen URI without emitting
+	 * actions; the owner announces it with `session/chatAdded`.
+	 */
+	addForkedChat(ref: ChatRef, uri: string, chat: ChatState): void {
+		this.#chats.set(ref.chatId, chat);
+		this.#forkRefs.set(uri, ref);
+		this.#forkUris.set(ref.chatId, uri);
+	}
+
+	/** Removes a session with its default and forked chats. */
 	removeSession(id: string): void {
 		this.#sessions.delete(id);
 		this.#chats.delete(id);
+		for (const [uri, ref] of this.#forkRefs) {
+			if (ref.sessionId !== id) continue;
+			this.#chats.delete(ref.chatId);
+			this.#forkRefs.delete(uri);
+			this.#forkUris.delete(ref.chatId);
+		}
+	}
+
+	/** Resolves a URI, forked chats' client-chosen URIs included. */
+	ref(uri: string): ChannelRef {
+		return this.#forkRefs.get(uri) ?? parseChannel(uri);
+	}
+
+	/** The URI a chat is published at. */
+	chatResource(ref: ChatRef): string {
+		return this.#forkUris.get(ref.chatId) ?? chatUri(ref.sessionId);
 	}
 
 	/** Registers a terminal or resource-watch channel at `uri` without emitting actions. */
@@ -129,7 +161,7 @@ export class StateStore {
 		const fromSeq = this.#seq;
 		const exact = this.#exact.get(channel);
 		if (exact) return { resource: channel, state: exact.state, fromSeq };
-		const ref = parseChannel(channel);
+		const ref = this.ref(channel);
 		switch (ref.kind) {
 			case "root":
 				return { resource: ROOT_CHANNEL, state: this.#root, fromSeq };
@@ -138,8 +170,8 @@ export class StateStore {
 				return state && { resource: sessionUri(ref.sessionId), state, fromSeq };
 			}
 			case "chat": {
-				const state = this.#chats.get(ref.sessionId);
-				return state && { resource: chatUri(ref.sessionId), state, fromSeq };
+				const state = this.#chats.get(ref.chatId);
+				return state && { resource: this.chatResource(ref), state, fromSeq };
 			}
 			default:
 				return undefined;
@@ -161,7 +193,7 @@ export class StateStore {
 			this.#exact.set(channel, reduceExact(exact, action));
 			return this.#emit(channel, action, origin);
 		}
-		const ref = parseChannel(channel);
+		const ref = this.ref(channel);
 		let resource: string;
 		switch (ref.kind) {
 			case "root":
@@ -176,10 +208,10 @@ export class StateStore {
 				break;
 			}
 			case "chat": {
-				const state = this.#chats.get(ref.sessionId);
+				const state = this.#chats.get(ref.chatId);
 				if (!state) return undefined;
-				this.#chats.set(ref.sessionId, chatReducer(state, action as ChatAction));
-				resource = chatUri(ref.sessionId);
+				this.#chats.set(ref.chatId, chatReducer(state, action as ChatAction));
+				resource = this.chatResource(ref);
 				break;
 			}
 			default:

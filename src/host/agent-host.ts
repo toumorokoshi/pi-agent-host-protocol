@@ -6,14 +6,18 @@ import {
 	ActionType,
 	AhpErrorCodes,
 	type ChatAction,
+	ChatOriginKind,
 	CompletionItemKind,
 	type CompletionsResult,
 	type DirectoryCustomization,
 	type InitializeResult,
 	JsonRpcErrorCodes,
 	type ListSessionsResult,
+	type Message,
+	MessageKind,
 	type ReconnectResult,
 	ReconnectResultType,
+	type SessionChatSummary,
 	type SessionSummary,
 	type Snapshot,
 	type StateAction,
@@ -23,10 +27,10 @@ import type { AttachRequest } from "../bridge/protocol.ts";
 import { type Logger, silentLogger } from "../core/logger.ts";
 import { StateStore } from "../core/state-store.ts";
 import {
+	type ChatRef,
 	chatUri,
 	fileUri,
 	PROVIDER,
-	parseChannel,
 	parseSessionUri,
 	pathFromFileUri,
 	ROOT_CHANNEL,
@@ -39,9 +43,16 @@ import {
 	userCommands,
 	withFrontmatter,
 } from "../pi/customizations.ts";
+import { forkTitle } from "../pi/forks.ts";
 import { sweepInterval } from "../pi/idle.ts";
 import { toSessionModelInfo } from "../pi/models.ts";
-import { PiSession, restoredStatus, type SessionHostContext, type SessionSummaryChanges } from "../pi/pi-session.ts";
+import {
+	type ChatBinding,
+	PiSession,
+	restoredStatus,
+	type SessionHostContext,
+	type SessionSummaryChanges,
+} from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
@@ -49,6 +60,7 @@ import { selectProtocolVersion } from "../protocol/version.ts";
 import { type ArchiveStore, memoryArchiveStore } from "./archive-store.ts";
 import type { LiveSessionHandler } from "./bridges.ts";
 import { Connection, type ConnectionHandler, type RESPONDED, type Reply } from "./connection.ts";
+import { type ForkRecord, type ForkStore, forkByChat, forksOf, memoryForkStore } from "./fork-store.ts";
 import { ResourceWatchService } from "./resource-watches.ts";
 import { ResourceService } from "./resources.ts";
 import { TerminalService } from "./terminals.ts";
@@ -75,6 +87,8 @@ export interface AgentHostOptions {
 	now?: () => number;
 	/** Persisted archived flags. Kept in memory when unset. */
 	archive?: ArchiveStore;
+	/** Persisted forked chats. Kept in memory when unset. */
+	forks?: ForkStore;
 }
 
 type ActionOutcome = { kind: "accepted" } | { kind: "rejected"; reason: string } | { kind: "ignored" };
@@ -93,7 +107,6 @@ const ACCEPTED_SESSION_ACTIONS = new Set<string>([
 ]);
 
 const UNSUPPORTED_METHODS = new Set([
-	"createChat",
 	"moveChat",
 	"disposeChat",
 	"invokeChangesetOperation",
@@ -120,6 +133,8 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	readonly logger: Logger;
 	readonly #connections = new Set<Connection>();
 	readonly #sessions = new Map<string, PiSession>();
+	/** Forked chats, by the id of the pi session backing each one. */
+	readonly #forkedChats = new Map<string, PiSession>();
 	/** Negotiated protocol version per clientId, for `reconnect`. */
 	readonly #clientVersions = new Map<string, string>();
 	readonly #resources = new ResourceService();
@@ -135,6 +150,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	#nextRefresh: Promise<void> | undefined;
 	readonly now: () => number;
 	readonly archive: ArchiveStore;
+	readonly forks: ForkStore;
 
 	constructor(options: AgentHostOptions) {
 		this.backend = options.backend;
@@ -143,6 +159,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		this.logger = options.logger ?? silentLogger;
 		this.now = options.now ?? Date.now;
 		this.archive = options.archive ?? memoryArchiveStore();
+		this.forks = options.forks ?? memoryForkStore();
 		this.#idleTimeoutMs = options.idleTimeoutMs ?? 0;
 		if (this.#idleTimeoutMs > 0) {
 			this.#idleTimer = setInterval(() => void this.suspendIdleSessions(), sweepInterval(this.#idleTimeoutMs));
@@ -160,6 +177,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 					displayName: "Pi",
 					description: "The pi coding agent",
 					models: [],
+					capabilities: { multipleChats: { fork: true } },
 				},
 			],
 			activeSessions: 0,
@@ -231,7 +249,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	async #sweep(): Promise<number> {
 		const cutoff = this.now() - this.#idleTimeoutMs;
 		let stopped = 0;
-		for (const session of [...this.#sessions.values()]) {
+		for (const session of this.#chats()) {
 			try {
 				if (!(await session.suspend(cutoff))) continue;
 				stopped++;
@@ -269,7 +287,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 
 	async #refreshAll(): Promise<void> {
 		await Promise.all(
-			[...this.#sessions.values()].map((session) =>
+			this.#chats().map((session) =>
 				session.refreshBackgroundWork().catch((error) => {
 					this.logger.warn("could not refresh background work", {
 						session: session.id,
@@ -288,12 +306,24 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		await this.#refreshing?.catch(() => {});
 		for (const connection of this.#connections) connection.close();
 		this.#connections.clear();
-		await Promise.all([...this.#sessions.values()].map((session) => session.dispose()));
+		await Promise.all(this.#chats().map((session) => session.dispose()));
 		this.#sessions.clear();
+		this.#forkedChats.clear();
+		await this.forks.flush();
 		this.#terminals.disposeAll();
 		await this.#watches.disposeAll();
 		await this.backend.dispose();
 		await this.archive.flush();
+	}
+
+	/** Every loaded chat: sessions' default chats and forked chats. */
+	#chats(): PiSession[] {
+		return [...this.#sessions.values(), ...this.#forkedChats.values()];
+	}
+
+	/** The loaded chat a chat reference addresses. */
+	#chat(ref: ChatRef): PiSession | undefined {
+		return ref.chatId === ref.sessionId ? this.#sessions.get(ref.sessionId) : this.#forkedChats.get(ref.chatId);
 	}
 
 	#isSubscribed(channel: string): boolean {
@@ -321,6 +351,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			} else {
 				session = PiSession.live(this, info, agent, entries);
 				this.#sessions.set(info.sessionId, session);
+				await this.#loadForks(info.sessionId);
 				this.#notifyRoot("root/sessionAdded", { summary: session.summary() });
 			}
 		}
@@ -338,7 +369,11 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	activityChanged(): void {
 		// A turn that ended may have left processes running.
 		void this.refreshBackgroundWork();
-		const active = [...this.#sessions.values()].filter((session) => session.isRunning).length;
+		const active = new Set(
+			this.#chats()
+				.filter((chat) => chat.isRunning)
+				.map((chat) => chat.sessionId),
+		).size;
 		if (active === this.#activeSessions) return;
 		this.#activeSessions = active;
 		this.store.dispatch(ROOT_CHANNEL, { type: ActionType.RootActiveSessionsChanged, activeSessions: active });
@@ -363,6 +398,8 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				return this.#createSession(params);
 			case "disposeSession":
 				return this.#disposeSession(params);
+			case "createChat":
+				return this.#createChat(params);
 			case "listSessions":
 				return this.#listSessions(params);
 			case "fetchTurns":
@@ -521,18 +558,94 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 
 	// ── Sessions ──────────────────────────────────────────────────────────
 
-	/** Ensures the session addressed by a session or chat URI is loaded. */
+	/** Ensures the session addressed by a session or chat URI is loaded, with its forked chats. */
 	async #load(channel: string): Promise<void> {
 		if (this.store.channel(channel)) return;
-		const ref = parseChannel(channel);
+		const ref = this.store.ref(channel);
 		if (ref.kind === "root") return;
 		if (ref.kind === "unknown") throw ProtocolError.notFound(channel);
-		if (this.#sessions.has(ref.sessionId)) return;
-		const info = (await this.#catalogSessions()).find((session) => session.id === ref.sessionId);
+		// A forked chat's URI is the client's; until its session loads, only the fork store knows it.
+		const sessionId = forkByChat(this.forks.all(), channel)?.[1].session ?? ref.sessionId;
+		if (this.#sessions.has(sessionId)) return;
+		const info = (await this.#catalogSessions()).find((session) => session.id === sessionId);
 		if (!info) throw ProtocolError.sessionNotFound(channel);
-		if (this.#sessions.has(ref.sessionId)) return;
-		this.#sessions.set(ref.sessionId, PiSession.open(this, info.path));
-		this.logger.debug("session loaded", { session: ref.sessionId, path: info.path });
+		if (this.#sessions.has(sessionId)) return;
+		this.#sessions.set(sessionId, PiSession.open(this, info.path));
+		this.logger.debug("session loaded", { session: sessionId, path: info.path });
+		await this.#loadForks(sessionId);
+	}
+
+	/** Loads the forked chats of a loaded session. Forks whose pi session file is gone are skipped. */
+	async #loadForks(sessionId: string): Promise<void> {
+		const forks = forksOf(this.forks.all(), sessionId);
+		if (forks.length === 0) return;
+		const catalog = await this.#catalogSessions();
+		for (const [id, record] of forks) {
+			if (this.#forkedChats.has(id) || !this.#sessions.has(sessionId)) continue;
+			const info = catalog.find((session) => session.id === id);
+			if (!info) {
+				this.logger.warn("forked chat's session file not found", { session: sessionId, chat: record.chat, fork: id });
+				continue;
+			}
+			this.#forkedChats.set(id, PiSession.openFork(this, info.path, forkBinding(record)));
+			this.logger.debug("forked chat loaded", { session: sessionId, chat: record.chat, fork: id });
+		}
+	}
+
+	/**
+	 * Forks a chat at a completed turn into a new chat of the same session
+	 * (`createChat` with a `ForkChatSource`). The fork is a new pi session
+	 * file branched from the source chat's, so the model has the same context
+	 * through that turn. See specs/forks.md.
+	 */
+	async #createChat(params: Record<string, unknown>): Promise<null> {
+		const channel = requireString(params.channel, "channel");
+		const sessionId = parseSessionUri(channel);
+		if (!sessionId) throw ProtocolError.invalidParams(`Invalid session URI: ${channel}`);
+		const chat = requireString(params.chat, "chat");
+		const source = forkSource(params.source);
+		await this.#load(channel);
+		const session = this.#sessions.get(sessionId);
+		if (!session) throw ProtocolError.sessionNotFound(channel);
+		if (this.store.snapshot(chat) || forkByChat(this.forks.all(), chat)) {
+			throw new ProtocolError(AhpErrorCodes.AlreadyExists, `Chat already exists: ${chat}`);
+		}
+		const sourceRef = this.store.ref(source.chat);
+		const sourceChat = sourceRef.kind === "chat" ? this.#chat(sourceRef) : undefined;
+		if (!sourceChat || sourceChat.sessionId !== sessionId) {
+			throw ProtocolError.invalidParams(`Source chat is not a chat of ${channel}: ${source.chat}`);
+		}
+		const title = forkTitle(this.store.chat(sourceChat.id)?.title ?? "Chat");
+		let path: string;
+		try {
+			path = await sourceChat.fork(source.turnId, title);
+		} catch (error) {
+			throw ProtocolError.invalidParams(`Cannot fork: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		// Another request may have taken the URI while pi wrote the file.
+		if (this.store.snapshot(chat)) throw new ProtocolError(AhpErrorCodes.AlreadyExists, `Chat already exists: ${chat}`);
+		const record: ForkRecord = { session: sessionId, chat, source: source.chat, turnId: source.turnId };
+		const fork = PiSession.openFork(this, path, forkBinding(record));
+		this.#forkedChats.set(fork.id, fork);
+		this.forks.add(fork.id, record);
+		this.logger.debug("chat forked", {
+			session: sessionId,
+			chat,
+			fork: fork.id,
+			from: source.chat,
+			turn: source.turnId,
+		});
+		const message = initialMessage(params.initialMessage);
+		if (message) {
+			const action: ChatAction = {
+				type: ActionType.ChatTurnStarted,
+				turnId: crypto.randomUUID(),
+				startedAt: new Date().toISOString(),
+				message,
+			};
+			if (this.store.dispatch(chat, action)) fork.onChatAction(action);
+		}
+		return null;
 	}
 
 	/** Slash-command completions for a user message. Best effort: failures return no items. */
@@ -540,13 +653,14 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		const channel = requireString(params.channel, "channel");
 		const text = typeof params.text === "string" ? params.text : "";
 		const offset = typeof params.offset === "number" ? params.offset : text.length;
-		const ref = parseChannel(channel);
+		const ref = this.store.ref(channel);
 		if (params.kind !== CompletionItemKind.UserMessage || (ref.kind !== "chat" && ref.kind !== "session")) {
 			return { items: [] };
 		}
 		try {
 			await this.#load(channel);
-			const session = this.#sessions.get(ref.sessionId);
+			const loaded = this.store.ref(channel);
+			const session = loaded.kind === "chat" ? this.#chat(loaded) : this.#sessions.get(ref.sessionId);
 			return { items: (await session?.completions(text, offset)) ?? [] };
 		} catch (error) {
 			this.logger.debug("completions failed", {
@@ -638,8 +752,16 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			if (this.store.session(id)) live.set(id, session.summary());
 		}
 		const all = [...live.values()];
-		for (const info of await this.#catalogSessions()) {
-			if (!live.has(info.id) && info.messageCount > 0) all.push(catalogSummary(info, this.archive.isArchived(info.id)));
+		const forks = this.forks.all();
+		const catalog = await this.#catalogSessions();
+		const byId = new Map(catalog.map((info) => [info.id, info]));
+		for (const info of catalog) {
+			if (live.has(info.id) || forks.has(info.id) || info.messageCount === 0) continue;
+			const forkedChats = forksOf(forks, info.id).flatMap(([id, record]) => {
+				const fork = byId.get(id);
+				return fork ? [forkedChatSummary(fork, record)] : [];
+			});
+			all.push(catalogSummary(info, this.archive.isArchived(info.id), forkedChats));
 		}
 		all.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 		const offset = typeof params.cursor === "string" ? Number.parseInt(params.cursor, 10) || 0 : 0;
@@ -690,13 +812,11 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			return { kind: "accepted" };
 		}
 		if (exact?.kind === "resourceWatch") return unsupported;
-		let ref = parseChannel(channel);
+		if (this.store.ref(channel).kind !== "root") await this.#load(channel).catch(() => undefined);
+		let ref = this.store.ref(channel);
 		// VS Code addresses session renames to the chat; AHP defines them on the session.
 		if (ref.kind === "chat" && action.type === ActionType.SessionTitleChanged) {
 			ref = { kind: "session", sessionId: ref.sessionId };
-		}
-		if (ref.kind === "session" || ref.kind === "chat") {
-			await this.#load(channel).catch(() => undefined);
 		}
 		switch (ref.kind) {
 			case "root":
@@ -712,7 +832,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				return { kind: "accepted" };
 			}
 			case "chat": {
-				const session = this.#sessions.get(ref.sessionId);
+				const session = this.#chat(ref);
 				if (!session) return { kind: "ignored" };
 				const reason = session.validateChatAction(action);
 				if (reason) return { kind: "rejected", reason };
@@ -732,9 +852,13 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	}
 }
 
-function catalogSummary(info: SessionInfo, archived: boolean): SessionSummary {
+function catalogTitle(info: SessionInfo): string {
 	const firstLine = info.firstMessage.trim().split("\n")[0] ?? "";
-	const title = info.name || (firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine) || "Untitled session";
+	return info.name || (firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine) || "Untitled session";
+}
+
+function catalogSummary(info: SessionInfo, archived: boolean, forkedChats: SessionChatSummary[] = []): SessionSummary {
+	const title = catalogTitle(info);
 	const status = restoredStatus(archived);
 	return {
 		resource: sessionUri(info.id),
@@ -744,14 +868,45 @@ function catalogSummary(info: SessionInfo, archived: boolean): SessionSummary {
 		createdAt: info.created.toISOString(),
 		modifiedAt: info.modified.toISOString(),
 		workingDirectories: [fileUri(info.cwd)],
-		chats: [
-			{
-				resource: chatUri(info.id),
-				title,
-				status,
-			},
-		],
+		chats: [{ resource: chatUri(info.id), title, status }, ...forkedChats],
 	};
+}
+
+/** A forked chat's catalog entry, from its pi session file's listing. */
+function forkedChatSummary(info: SessionInfo, record: ForkRecord): SessionChatSummary {
+	return {
+		resource: record.chat,
+		title: catalogTitle(info),
+		status: restoredStatus(false),
+		origin: { kind: ChatOriginKind.Fork, chat: record.source, turnId: record.turnId },
+	};
+}
+
+function forkBinding(record: ForkRecord): Extract<ChatBinding, { kind: "fork" }> {
+	return {
+		kind: "fork",
+		session: record.session,
+		chat: record.chat,
+		origin: { chat: record.source, turnId: record.turnId },
+	};
+}
+
+/** The fork source of `createChat`. Other ways of creating a chat are not supported. */
+function forkSource(value: unknown): { chat: string; turnId: string } {
+	const source = value as { kind?: unknown; chat?: unknown; turnId?: unknown } | undefined;
+	if (typeof source !== "object" || source === null) {
+		throw ProtocolError.invalidParams("createChat needs a fork source: this host only forks chats");
+	}
+	if (source.kind !== ChatOriginKind.Fork) {
+		throw ProtocolError.invalidParams(`Unsupported chat source: ${String(source.kind)}`);
+	}
+	return { chat: requireString(source.chat, "source.chat"), turnId: requireString(source.turnId, "source.turnId") };
+}
+
+function initialMessage(value: unknown): Message | undefined {
+	const message = value as Partial<Message> | undefined;
+	if (typeof message !== "object" || message === null || typeof message.text !== "string") return undefined;
+	return { ...message, text: message.text, origin: message.origin ?? { kind: MessageKind.User } };
 }
 
 function clientName(clientInfo: unknown): string | undefined {

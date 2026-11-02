@@ -3,6 +3,7 @@ import type { SessionEntry, SessionManager, SlashCommandInfo } from "@earendil-w
 import {
 	ActionType,
 	type ChatAction,
+	ChatOriginKind,
 	type ChatState,
 	type ChatSummary,
 	type CompletionItem,
@@ -33,6 +34,7 @@ import {
 	userCommands,
 	withFrontmatter,
 } from "./customizations.ts";
+import { forkKeep, forkLeaf, forkTurnError } from "./forks.ts";
 import { turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
@@ -83,12 +85,25 @@ function titleFrom(text: string): string {
 	return line.length > TITLE_LENGTH ? `${line.slice(0, TITLE_LENGTH - 1)}…` : line || UNTITLED;
 }
 
-/** Binds one AHP session (and its single default chat) to one pi agent session. */
+/**
+ * Where a pi session is published: as an AHP session and its default chat,
+ * or as a chat forked inside another AHP session.
+ */
+export type ChatBinding =
+	| { kind: "session" }
+	| { kind: "fork"; session: string; chat: string; origin: { chat: string; turnId: string } };
+
+/**
+ * Binds one pi agent session to one AHP chat: an AHP session's default chat
+ * (and the session itself), or a chat forked inside another session.
+ */
 export class PiSession {
+	/** The pi session id; for a default chat, also the AHP session's id. */
 	readonly id: string;
 	readonly cwd: string;
 	readonly createdAt: string;
 	readonly #ctx: SessionHostContext;
+	readonly #binding: ChatBinding;
 	#sessionManager: SessionManager;
 	#agent: Promise<PiAgent> | undefined;
 	#turn: ActiveTurn | undefined;
@@ -134,14 +149,30 @@ export class PiSession {
 		cwd: string,
 		sessionManager: SessionManager,
 		createdAt: string,
+		binding: ChatBinding = { kind: "session" },
 	) {
 		this.#ctx = ctx;
 		this.id = id;
 		this.cwd = cwd;
 		this.#sessionManager = sessionManager;
 		this.createdAt = createdAt;
+		this.#binding = binding;
 		this.#hasTurns = false;
 		this.#lastActivity = ctx.now();
+	}
+
+	/** Id of the AHP session the chat belongs to. */
+	get sessionId(): string {
+		return this.#binding.kind === "fork" ? this.#binding.session : this.id;
+	}
+
+	/** The chat's URI. */
+	get chat(): string {
+		return this.#binding.kind === "fork" ? this.#binding.chat : chatUri(this.id);
+	}
+
+	get isFork(): boolean {
+		return this.#binding.kind === "fork";
 	}
 
 	/** A new, empty session. The pi agent starts immediately; `session/ready` follows. */
@@ -165,6 +196,49 @@ export class PiSession {
 		const session = PiSession.#fromHistory(ctx, manager, manager.getBranch(), manager.getSessionName());
 		session.#loadCommands(ctx.backend.folderCommands(session.cwd));
 		return session;
+	}
+
+	/**
+	 * A forked chat's pi session file, published as a chat of its AHP
+	 * session (`session/chatAdded`). The agent starts on the chat's first turn.
+	 */
+	static openFork(ctx: SessionHostContext, path: string, binding: Extract<ChatBinding, { kind: "fork" }>): PiSession {
+		const manager = ctx.backend.openSessionManager(path);
+		const session = PiSession.#fromHistory(
+			ctx,
+			manager,
+			manager.getBranch(),
+			manager.getSessionName(),
+			manager.getSessionId(),
+			manager.getCwd(),
+			binding,
+		);
+		session.#dispatchSession({ type: ActionType.SessionChatAdded, summary: session.#currentChatSummary() });
+		session.#syncCatalog();
+		session.#loadCommands(ctx.backend.folderCommands(session.cwd));
+		return session;
+	}
+
+	/**
+	 * Writes a new pi session file holding this chat's history through its
+	 * completed turn `turnId`, named `title`, and returns its path. pi's
+	 * `createBranchedSession` copies the entries (with their ids) and records
+	 * this session's file as the parent. The file is read afresh, since a
+	 * pi process may have appended to it.
+	 */
+	async fork(turnId: string, title: string): Promise<string> {
+		const chat = this.#ctx.store.chat(this.id);
+		const error = chat ? forkTurnError(chat.turns, turnId) : "Unknown chat";
+		if (error || !chat) throw new Error(error);
+		const file = await this.#sessionFile();
+		if (!file) throw new Error("The chat has no session file to fork");
+		const source = this.#ctx.backend.openSessionManager(file);
+		const leaf = forkLeaf(source.getBranch(), forkKeep(chat.turns, turnId, this.#unrecorded));
+		if (!leaf) throw new Error("The chat has no history to fork");
+		const path = source.createBranchedSession(leaf);
+		if (!path) throw new Error("pi did not write the forked session");
+		this.#ctx.backend.openSessionManager(path).appendSessionInfo(title);
+		return path;
 	}
 
 	/**
@@ -194,10 +268,11 @@ export class PiSession {
 		name: string | undefined,
 		id = manager.getSessionId(),
 		cwd = manager.getCwd(),
+		binding: ChatBinding = { kind: "session" },
 	): PiSession {
 		const header = manager.getHeader();
 		const createdAt = header?.timestamp ?? new Date().toISOString();
-		const session = new PiSession(ctx, id, cwd, manager, createdAt);
+		const session = new PiSession(ctx, id, cwd, manager, createdAt, binding);
 		const turns = turnsFromEntries([...entries]);
 		const title = name ?? (turns[0] ? titleFrom(turns[0].message.text) : UNTITLED);
 		const lastTurn = turns.at(-1);
@@ -205,8 +280,13 @@ export class PiSession {
 			lastTurn?.startedAt && lastTurn.duration !== undefined
 				? new Date(Date.parse(lastTurn.startedAt) + lastTurn.duration).toISOString()
 				: createdAt;
-		const status = restoredStatus(ctx.archive.isArchived(id));
 		session.#hasTurns = turns.length > 0;
+		if (binding.kind === "fork") {
+			const chat = { ...session.#chatSummary(title, restoredStatus(false), modifiedAt), turns };
+			ctx.store.addForkedChat({ kind: "chat", sessionId: binding.session, chatId: id }, binding.chat, chat);
+			return session;
+		}
+		const status = restoredStatus(ctx.archive.isArchived(id));
 		ctx.store.addSession(id, session.#initialSessionState(title, SessionLifecycle.Ready, status), {
 			...session.#chatSummary(title, status, modifiedAt),
 			turns,
@@ -355,7 +435,8 @@ export class PiSession {
 				this.#truncate();
 				break;
 			case ActionType.ChatIsArchivedChanged:
-				this.#ctx.archive.setArchived(this.id, action.isArchived);
+				// A forked chat is not listed as a session, so only the default chat archives one.
+				if (!this.isFork) this.#ctx.archive.setArchived(this.id, action.isArchived);
 				this.#syncSummary();
 				break;
 			case ActionType.ChatIsReadChanged:
@@ -375,7 +456,7 @@ export class PiSession {
 				this.#ctx.store.setChatTitle(this.id, action.title);
 				this.#dispatchSession({
 					type: ActionType.SessionChatUpdated,
-					chat: chatUri(this.id),
+					chat: this.chat,
 					changes: { title: action.title },
 				});
 				this.#syncTitle(action.title);
@@ -438,6 +519,16 @@ export class PiSession {
 	 */
 	#reopenSessionFile(file = this.#sessionManager.getSessionFile()): void {
 		if (file && existsSync(file)) this.#sessionManager = this.#ctx.backend.openSessionManager(file);
+	}
+
+	/**
+	 * The session's file on disk. A `pi --mode rpc` child names the file of
+	 * a session it created itself, so the host's manager may not know it.
+	 */
+	async #sessionFile(): Promise<string | undefined> {
+		const file = this.#sessionManager.getSessionFile();
+		if (file && existsSync(file)) return file;
+		return (await this.#ctx.backend.listSessions()).find((info) => info.id === this.id)?.path;
 	}
 
 	#touch(): void {
@@ -521,7 +612,7 @@ export class PiSession {
 		const after = this.#ctx.store.chat(this.id)?.backgroundWork?.length ?? 0;
 		if (after !== before) {
 			this.#ctx.logger.debug("background work changed", { session: this.id, count: after });
-			this.#ctx.summaryChanged(this.id, { _meta: backgroundWorkMeta(after) });
+			if (!this.isFork) this.#ctx.summaryChanged(this.id, { _meta: backgroundWorkMeta(after) });
 		}
 	}
 
@@ -745,7 +836,8 @@ export class PiSession {
 		this.#commands = loaded;
 		loaded
 			.then((commands) => {
-				if (this.#commands !== loaded || this.#disposed) return;
+				// A forked chat shares its session's folder, whose default chat publishes them.
+				if (this.#commands !== loaded || this.#disposed || this.isFork) return;
 				const customizations = toCustomizations(commands);
 				const current = this.#ctx.store.session(this.id)?.customizations ?? [];
 				if (JSON.stringify(current) === JSON.stringify(customizations)) return;
@@ -897,6 +989,8 @@ export class PiSession {
 	}
 
 	#maybeSetTitle(text: string): void {
+		// A forked chat is named when it is forked; the session keeps its own title.
+		if (this.isFork) return;
 		const session = this.#ctx.store.session(this.id);
 		if (!session || session.title !== UNTITLED || this.#sessionManager.getSessionName()) return;
 		const title = titleFrom(text);
@@ -904,7 +998,7 @@ export class PiSession {
 		this.#dispatchSession({ type: ActionType.SessionTitleChanged, title });
 		this.#dispatchSession({
 			type: ActionType.SessionChatUpdated,
-			chat: chatUri(this.id),
+			chat: this.chat,
 			changes: { title },
 		});
 		this.#ctx.store.setChatTitle(this.id, title);
@@ -913,15 +1007,21 @@ export class PiSession {
 	}
 
 	#syncTitle(title: string): void {
-		const chat = this.#ctx.store.chat(this.id);
-		const status = chat?.status ?? SessionStatus.Idle;
-		this.#ctx.summaryChanged(this.id, {
-			title,
-			chats: [{ resource: chatUri(this.id), title, status }],
-		});
+		const chats = this.#ctx.store.session(this.sessionId)?.chats;
+		this.#ctx.summaryChanged(this.sessionId, { title, ...(chats ? { chats } : {}) });
 	}
 
-	/** Mirrors the chat's summary fields into the session catalog and root summary. */
+	/** Publishes the session's chat catalog (default and forked chats) in the root summary. */
+	#syncCatalog(): void {
+		const chats = this.#ctx.store.session(this.sessionId)?.chats;
+		if (chats) this.#ctx.summaryChanged(this.sessionId, { chats });
+	}
+
+	/**
+	 * Mirrors the chat's summary fields into the session catalog and root
+	 * summary. A default chat's status is its session's; a forked chat's
+	 * only changes its entry in the catalog.
+	 */
 	#syncSummary(): void {
 		const chat = this.#ctx.store.chat(this.id);
 		if (!chat) return;
@@ -931,9 +1031,13 @@ export class PiSession {
 		}
 		this.#dispatchSession({
 			type: ActionType.SessionChatUpdated,
-			chat: chatUri(this.id),
+			chat: this.chat,
 			changes: { status: chat.status, modifiedAt: chat.modifiedAt },
 		});
+		if (this.isFork) {
+			this.#syncCatalog();
+			return;
+		}
 		this.#ctx.store.setSessionStatus(this.id, chat.status);
 		this.#ctx.summaryChanged(this.id, { status: chat.status, modifiedAt: chat.modifiedAt });
 	}
@@ -942,27 +1046,45 @@ export class PiSession {
 	 * Mirrors the chat's activity text into the session state, the session's
 	 * chat catalog and the root summary, as AHP's summary aggregation rules ask.
 	 * `null` in the root summary explicitly clears the text (omitting the field
-	 * would leave the client's cached value in place).
+	 * would leave the client's cached value in place). A forked chat's text
+	 * only goes into its catalog entry.
 	 */
 	#syncActivity(): void {
 		const activity = this.#ctx.store.chat(this.id)?.activity;
+		if (this.isFork) {
+			const entry = this.#ctx.store.session(this.sessionId)?.chats.find((chat) => chat.resource === this.chat);
+			if (entry?.activity === activity) return;
+			this.#dispatchSession({ type: ActionType.SessionChatUpdated, chat: this.chat, changes: { activity } });
+			this.#syncCatalog();
+			return;
+		}
 		if (this.#ctx.store.session(this.id)?.activity === activity) return;
 		this.#dispatchSession({ type: ActionType.SessionActivityChanged, activity });
-		this.#dispatchSession({ type: ActionType.SessionChatUpdated, chat: chatUri(this.id), changes: { activity } });
+		this.#dispatchSession({ type: ActionType.SessionChatUpdated, chat: this.chat, changes: { activity } });
 		this.#ctx.summaryChanged(this.id, { activity: activity ?? null });
 	}
 
 	#dispatchChat(action: ChatAction): void {
-		this.#ctx.store.dispatch(chatUri(this.id), action);
+		this.#ctx.store.dispatch(this.chat, action);
 		if (action.type === ActionType.ChatActivityChanged) this.#syncActivity();
 	}
 
 	#dispatchSession(action: StateAction): void {
-		this.#ctx.store.dispatch(sessionUri(this.id), action);
+		this.#ctx.store.dispatch(sessionUri(this.sessionId), action);
 	}
 
 	#chatSummary(title: string, status: SessionStatus, modifiedAt: string): ChatSummary & Pick<ChatState, "resource"> {
-		return { resource: chatUri(this.id), title, status, modifiedAt };
+		const summary = { resource: this.chat, title, status, modifiedAt };
+		if (this.#binding.kind !== "fork") return summary;
+		return { ...summary, origin: { kind: ChatOriginKind.Fork as const, ...this.#binding.origin } };
+	}
+
+	/** The chat's catalog entry, from its current state. */
+	#currentChatSummary(): ChatSummary {
+		const chat = this.#ctx.store.chat(this.id);
+		if (!chat) throw new Error(`Unknown chat: ${this.chat}`);
+		const { resource, title, status, modifiedAt, origin, activity } = chat;
+		return { resource, title, status, modifiedAt, ...(origin ? { origin } : {}), ...(activity ? { activity } : {}) };
 	}
 
 	#initialSessionState(title: string, lifecycle: SessionLifecycle, status: SessionStatus): SessionState {

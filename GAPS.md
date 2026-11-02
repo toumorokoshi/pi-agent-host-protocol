@@ -10,7 +10,7 @@ Known issues and features not yet implemented.
 ## Protocol coverage (milestone 1)
 
 - **Tool approvals:** tools run without confirmation, because pi has no permission system. Planned: an opt-in `--approve-tools`.
-- **One chat per session:** `createChat`, forks and side chats are unsupported.
+- **Chats other than forks:** side chats, empty new chats (`createChat` without a source), `moveChat` and `disposeChat` are unsupported. See [Forked chats](#forked-chats).
 - **`disposeSession`** only discards empty sessions, and pi session files are never deleted (see the README).
 - **No paging:** `fetchTurns` does not page, so history is sent in full.
 - **History gaps:** compaction summaries, custom messages and bash executions are not shown in reloaded history.
@@ -69,6 +69,17 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
 - **Compaction:** a cut before a compaction entry moves the leaf before it, so pi's context is rebuilt from the uncompacted history and may compact again on the next run.
 - **A failed truncation** is only logged; the client learns of it when its next turn fails.
 - **Racing a queued message:** a queued message can start in the moment between the aborted run settling and the client's `chat/turnStarted` arriving, the same race a cancellation followed by a new message has.
+
+## Forked chats
+
+See [specs/forks.md](specs/forks.md).
+
+- **No delete:** a fork cannot be removed (`disposeChat`), and its pi session file and its entry in `forked-chats.json` are kept for good. A fork whose file was deleted outside the host is skipped with a warning but stays in the file.
+- **Not in the session's status:** a running or unread fork changes only its own catalog entry. The session's summary status, activity text and background work count follow its default chat, so a session list shows a session as idle while only a fork runs.
+- **Fork point after an edit:** the fork point is found on the source file's current branch. Right after `chat/truncated`, before the edited message is written, pi's file still ends on the abandoned branch, so a fork made in that moment counts along the old branch.
+- **Origin turn ids:** a fork's `origin.turnId` is the id the client knew when forking. Turns started in this host run have client ids, which become pi's entry ids when the session is reloaded, so after a restart the origin can name a turn the source chat no longer lists by that id.
+- **Fork files in pi:** each fork is an ordinary pi session (with `parentSession` set), so `pi --resume` lists it. Opening one in a pi terminal while the bridge runs attaches it as a session of its own, not as a chat of its session.
+- **Renaming a fork:** VS Code sends renames to the chat channel, which the host applies to the session, so renaming a fork that way renames its session.
 
 ## Skills and prompt templates
 

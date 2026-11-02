@@ -6,6 +6,7 @@ import { createLogger, LOG_LEVELS, type Logger, parseLogLevel } from "../core/lo
 import { AgentHost } from "../host/agent-host.ts";
 import { archivePath, fileArchiveStore } from "../host/archive-store.ts";
 import { BridgeServer, HostAlreadyRunningError } from "../host/bridges.ts";
+import { fileForkStore, forkStorePath } from "../host/fork-store.ts";
 import { type PiDirs, piDirsEnv, resolvePiDirs } from "../host/pi-dirs.ts";
 import { loadSettings, migrateSettings, saveSettings, settingsPath } from "../host/settings.ts";
 import { PI_MODES, type PiBackend, type PiMode, parsePiMode } from "../pi/agent.ts";
@@ -121,9 +122,13 @@ async function main(): Promise<void> {
 	const archive = await fileArchiveStore(archivePath(settingsPath()), (error) =>
 		logger.warn("could not save archived sessions", { error: error instanceof Error ? error.message : String(error) }),
 	);
+	const forks = await fileForkStore(forkStorePath(settingsPath()), (error) =>
+		logger.warn("could not save forked chats", { error: error instanceof Error ? error.message : String(error) }),
+	);
 	const agentHost = new AgentHost({
 		backend,
 		archive,
+		forks,
 		idleTimeoutMs,
 		backgroundWorkIntervalMs: piMode === "rpc" ? BACKGROUND_WORK_INTERVAL_MS : 0,
 		defaultDirectory: values.cwd ?? process.cwd(),

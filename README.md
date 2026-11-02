@@ -119,6 +119,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - Cancellation, steering messages, and queued messages that run once the current turn ends. A steering message opens a new turn when pi delivers it. A steering message that arrives when no turn is running (for example "send immediately" on a queued message just as the turn ends) starts a turn of its own instead of staying pending (see [specs/steering.md](specs/steering.md)).
 - **Resumable errors:** when the model server fails mid-turn (for example llama.cpp's `Failed to parse input` on a malformed tool call), the turn ends with a resumable error. The client can then continue the same turn without sending a new message, and the failed reply is left out of the model's context, the same as pi's own auto-retry.
 - **Editing a message and restarting from it:** `chat/truncated` (then `chat/turnStarted` with the edit) moves pi's session back to the kept turns, as pi's own `/tree` does, cancelling a running turn first. The model no longer sees the dropped turns; they stay in the session file on an abandoned branch. See [specs/truncation.md](specs/truncation.md).
+- **Forking a chat:** `createChat` with a fork source branches the chat at a completed turn into a new chat of the same session, through pi's `createBranchedSession`. The fork is its own pi session file, so the model has the same context through that turn, and the original chat is unchanged. Forks stay chats of their session across restarts (`~/.pi/agent-host-protocol/forked-chats.json`). See [specs/forks.md](specs/forks.md).
 - `listSessions` covers existing pi sessions on disk. Subscribing to one loads its history; new turns continue the same session file.
 - Session titles: the first prompt sets the title, and renaming from the client writes the name back to pi.
 - **Archived ("done") sessions stay archived** across host restarts. pi's session files have no archived flag, so the host keeps the list in `~/.pi/agent-host-protocol/archived-sessions.json` (see [specs/archived-sessions.md](specs/archived-sessions.md)).
@@ -130,7 +131,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 
 ### Known limitations
 
-- One chat per session. Forks, side chats and `createChat` are not supported.
+- Chats beyond a session's default one come only from forks. Side chats, empty new chats, `moveChat` and `disposeChat` are not supported.
 - No tool-approval prompts: pi has no permission system, and tools run without confirmation.
 - `disposeSession` only discards **empty** sessions. A session with history stays listed, and pi session files are never deleted. VS Code currently disposes sessions it is still showing, so treating dispose as delete would lose work.
 - pi extension dialogs (`ctx.ui.confirm` and similar) resolve with their defaults, because there is no UI on the host side.
@@ -160,7 +161,8 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 | `resourceWrite` / `resourceCopy` / `resourceDelete` / `resourceMove` / `resourceMkdir` / `resourceRequest` | refused | `PermissionDenied` (`-32009`). |
 | `createResourceWatch` | supported | `@parcel/watcher` with recursive, include and exclude options. Released when the last subscriber leaves. |
 | `createTerminal` / `disposeTerminal` | supported | Runs `$SHELL` in a pty. |
-| `createChat` / `moveChat` / `disposeChat` | not supported | One chat per session. |
+| `createChat` | partial | Forks only (`source.kind: "fork"`, at a completed turn); the agent advertises `multipleChats.fork`. Optional `initialMessage`. |
+| `moveChat` / `disposeChat` | not supported | |
 | `invokeChangesetOperation` | not supported | No changesets. |
 | `listAutomationTriggerDefinitions` / `runAutomation` / `fetchAutomationRuns` | not supported | No automations. |
 
@@ -181,7 +183,7 @@ Rejected actions are echoed only to the sending client, with a `rejectionReason`
 | Channel | Actions and notifications |
 |---|---|
 | Root | `root/agentsChanged` (the pi agent and its available models), `root/activeSessionsChanged`, `root/terminalsChanged`; notifications `root/sessionAdded`, `root/sessionRemoved`, `root/sessionSummaryChanged` (also when the background work count in `_meta` changes) |
-| Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatUpdated`, `session/activityChanged`, `session/customizationsChanged` (pi's skills and prompt templates) |
+| Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatAdded` (forks), `session/chatUpdated`, `session/activityChanged`, `session/customizationsChanged` (pi's skills and prompt templates) |
 | Chat | `chat/turnStarted` (queued messages, and runs started in a pi terminal), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/activityChanged`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/pendingMessageRemoved`, `chat/backgroundWorkSet` / `chat/backgroundWorkRemoved` (`rpc` mode) |
 | Terminal | `terminal/data`, `terminal/exited` |
 | Resource watch | `resourceWatch/changed` |
@@ -194,7 +196,7 @@ Not used: changesets, MCP, annotations, automations, canvases, input requests (e
 - **URIs** (`src/core/uris.ts`): VS Code addresses sessions as `<provider>:/<id>` and derives chat URIs as `ahp-chat://default/<base64url(sessionUri)>`. It does not use the URIs the host publishes. So this host publishes exactly those shapes, and also accepts the spec's `ahp-session:/` and `ahp-chat:/` forms. No per-connection URI rewriting is needed.
 - **Connections** (`src/host/connection.ts`) process messages in order, except `ping`. A subscription's snapshot is taken, registered and sent in the same tick, so no action can slip in between.
 - **Live sessions**: the pi extension in `src/extension/` connects to `src/host/bridges.ts` over a unix socket (`~/.pi/agent-host-protocol/host.sock`, which is also the single-instance lock). It speaks pi's own RPC command and event protocol (`src/pi/rpc-channel.ts`), so the host drives a terminal session with the same `RpcAgent` it uses for its own `pi --mode rpc` children. `PiSession` turns runs started outside the host into turns. See [specs/live-tui-sessions.md](specs/live-tui-sessions.md).
-- **pi binding**: `src/pi/pi-session.ts` maps one AHP session to one pi agent through the `PiAgent` / `PiBackend` shim in `src/pi/agent.ts`. Two backends implement it: `src/pi/rpc-backend.ts` (a `pi --mode rpc` child per session) and `src/pi/embedded-backend.ts` (pi's SDK in-process). `src/pi/turn-mapper.ts` turns pi's event stream into chat actions. `src/pi/history.ts` rebuilds turns from session files.
+- **pi binding**: `src/pi/pi-session.ts` maps one AHP chat (a session's default chat, or a fork) to one pi agent session through the `PiAgent` / `PiBackend` shim in `src/pi/agent.ts`. Two backends implement it: `src/pi/rpc-backend.ts` (a `pi --mode rpc` child per session) and `src/pi/embedded-backend.ts` (pi's SDK in-process). `src/pi/turn-mapper.ts` turns pi's event stream into chat actions. `src/pi/history.ts` rebuilds turns from session files.
 
 ## Development
 

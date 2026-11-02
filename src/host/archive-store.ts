@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { atomicWriter, readOptional } from "./json-file.ts";
 
 /** The archive file, next to the host's settings file. */
 export function archivePath(settingsFile: string): string {
@@ -71,29 +71,17 @@ export async function fileArchiveStore(
 	path: string,
 	onError: (error: unknown) => void = () => {},
 ): Promise<ArchiveStore> {
-	let archived = await readFile(path, "utf8").then(parseArchive, (error: NodeJS.ErrnoException) => {
-		if (error.code === "ENOENT") return new Set<string>();
-		throw error;
-	});
-	let writes = Promise.resolve();
-	const persist = (snapshot: ReadonlySet<string>) => {
-		writes = writes
-			.then(async () => {
-				await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-				const temp = `${path}.${process.pid}.tmp`;
-				await writeFile(temp, serializeArchive(snapshot), { mode: 0o600 });
-				await rename(temp, path);
-			})
-			.catch(onError);
-	};
+	const text = await readOptional(path);
+	let archived = text === undefined ? new Set<string>() : parseArchive(text);
+	const writer = atomicWriter(path, onError);
 	return {
 		isArchived: (sessionId) => archived.has(sessionId),
 		setArchived: (sessionId, value) => {
 			const next = withArchived(archived, sessionId, value);
 			if (next === archived) return;
 			archived = next;
-			persist(next);
+			writer.write(serializeArchive(next));
 		},
-		flush: () => writes,
+		flush: writer.flush,
 	};
 }

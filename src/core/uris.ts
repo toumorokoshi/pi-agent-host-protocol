@@ -39,22 +39,28 @@ export function parseChatUri(uri: string): string | undefined {
 	if (derived) {
 		return parseSessionUri(Buffer.from(derived, "base64url").toString("utf8"));
 	}
-	// A single default chat per session: the canonical chat id is the session id.
+	// A session's default chat: the canonical chat id is the session id.
 	return CANONICAL_CHAT_URI.exec(uri)?.[1];
 }
 
-export type ChannelRef =
-	| { kind: "root" }
-	| { kind: "session"; sessionId: string }
-	| { kind: "chat"; sessionId: string }
-	| { kind: "unknown" };
+/**
+ * A chat of a session. `chatId` is the pi session backing it: the session's
+ * own id for its default chat, another pi session's id for a forked chat.
+ */
+export type ChatRef = { kind: "chat"; sessionId: string; chatId: string };
 
+export type ChannelRef = { kind: "root" } | { kind: "session"; sessionId: string } | ChatRef | { kind: "unknown" };
+
+/**
+ * Resolves a URI by its shape alone. Forked chats have client-chosen URIs,
+ * which only the state store can resolve (`StateStore.ref`).
+ */
 export function parseChannel(uri: string): ChannelRef {
 	if (uri === ROOT_CHANNEL) return { kind: "root" };
 	const sessionId = parseSessionUri(uri);
 	if (sessionId) return { kind: "session", sessionId };
 	const chatSessionId = parseChatUri(uri);
-	if (chatSessionId) return { kind: "chat", sessionId: chatSessionId };
+	if (chatSessionId) return { kind: "chat", sessionId: chatSessionId, chatId: chatSessionId };
 	return { kind: "unknown" };
 }
 
