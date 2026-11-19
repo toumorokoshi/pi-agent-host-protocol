@@ -8,6 +8,7 @@ import type {
 	SessionManager,
 	SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
+import type { PiUiHandler } from "./dialogs.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
 
@@ -73,6 +74,12 @@ export interface PiAgent {
 	setSessionName(name: string): Promise<void>;
 	/** pi's slash commands: extension commands, prompt templates and skills (`skill:<name>`). */
 	commands(): Promise<readonly SlashCommandInfo[]>;
+	/**
+	 * Routes the dialogs and notifications pi's extensions open to `handler`.
+	 * Without one, dialogs are cancelled and notifications dropped. Only
+	 * agents over pi's RPC protocol support it.
+	 */
+	setUiHandler?(handler: PiUiHandler | undefined): void;
 	/**
 	 * Set only on agents the host may stop when idle (its own `pi --mode rpc`
 	 * children). Resolves with the processes pi started after it became

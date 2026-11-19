@@ -29,7 +29,13 @@ export function chatUri(sessionId: string, scheme: SessionScheme = PROVIDER): st
 	return `ahp-chat://default/${Buffer.from(sessionUri(sessionId, scheme), "utf8").toString("base64url")}`;
 }
 
+/** A session's annotations channel: its session URI plus `/annotations`, as the spec suggests. */
+export function annotationsUri(sessionId: string, scheme: SessionScheme = PROVIDER): string {
+	return `${sessionUri(sessionId, scheme)}/annotations`;
+}
+
 const SESSION_URI = /^(ahp-session|pi):\/([^/?#]+)$/i;
+const ANNOTATIONS_URI = /^(?:ahp-session|pi):\/([^/?#]+)\/annotations$/i;
 
 /** Returns the scheme a session URI is spelled with, or `undefined` if `uri` is not a session URI. */
 export function sessionSchemeOf(uri: string): SessionScheme | undefined {
@@ -37,7 +43,10 @@ export function sessionSchemeOf(uri: string): SessionScheme | undefined {
 	return scheme === "ahp-session" ? "ahp-session" : scheme === PROVIDER ? PROVIDER : undefined;
 }
 const CANONICAL_CHAT_URI = /^ahp-chat:\/([^/?#]+)$/i;
-const DERIVED_CHAT_URI = /^ahp-chat:\/\/[^/]+\/([^/?#]+)$/i;
+// Only the `default` authority names a session's default chat. VS Code
+// names other chats `ahp-chat://<chatId>/<base64url(sessionUri)>`, which
+// only the state store's fork records resolve.
+const DERIVED_CHAT_URI = /^ahp-chat:\/\/default\/([^/?#]+)$/i;
 
 /** Returns the session id addressed by a session URI, or `undefined`. */
 export function parseSessionUri(uri: string): string | undefined {
@@ -60,7 +69,12 @@ export function parseChatUri(uri: string): string | undefined {
  */
 export type ChatRef = { kind: "chat"; sessionId: string; chatId: string };
 
-export type ChannelRef = { kind: "root" } | { kind: "session"; sessionId: string } | ChatRef | { kind: "unknown" };
+export type ChannelRef =
+	| { kind: "root" }
+	| { kind: "session"; sessionId: string }
+	| ChatRef
+	| { kind: "annotations"; sessionId: string }
+	| { kind: "unknown" };
 
 /**
  * Resolves a URI by its shape alone. Forked chats have client-chosen URIs,
@@ -72,6 +86,8 @@ export function parseChannel(uri: string): ChannelRef {
 	if (sessionId) return { kind: "session", sessionId };
 	const chatSessionId = parseChatUri(uri);
 	if (chatSessionId) return { kind: "chat", sessionId: chatSessionId, chatId: chatSessionId };
+	const annotationsSessionId = ANNOTATIONS_URI.exec(uri)?.[1];
+	if (annotationsSessionId) return { kind: "annotations", sessionId: annotationsSessionId };
 	return { kind: "unknown" };
 }
 

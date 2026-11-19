@@ -1,6 +1,11 @@
 import {
 	type ActionEnvelope,
 	type ActionOrigin,
+	type Annotation,
+	type AnnotationsAction,
+	type AnnotationsState,
+	type AnnotationsSummary,
+	annotationsReducer,
 	type ChatAction,
 	type ChatState,
 	chatReducer,
@@ -20,6 +25,7 @@ import {
 	terminalReducer,
 } from "@microsoft/agent-host-protocol";
 import {
+	annotationsUri,
 	type ChannelRef,
 	type ChatRef,
 	chatUri,
@@ -48,6 +54,15 @@ function reduceExact(channel: ExactChannel, action: StateAction): ExactChannel {
 		: { kind: "resourceWatch", state: resourceWatchReducer(channel.state, action as ResourceWatchAction) };
 }
 
+/** The counts clients show for a session's annotations channel at `resource`. */
+export function annotationsSummary(resource: string, annotations: readonly Annotation[]): AnnotationsSummary {
+	return {
+		resource,
+		annotationCount: annotations.length,
+		entryCount: annotations.reduce((count, annotation) => count + annotation.entries.length, 0),
+	};
+}
+
 /**
  * Authoritative protocol state. Every mutation goes through the shared AHP
  * reducers so the host's state is exactly what clients reconstruct, and every
@@ -61,6 +76,8 @@ export class StateStore {
 	/** Forked chats: their client-chosen URIs, and the reverse. */
 	readonly #forkRefs = new Map<string, ChatRef>();
 	readonly #forkUris = new Map<string, string>();
+	/** Each session's annotations channel, by session id. */
+	readonly #annotations = new Map<string, AnnotationsState>();
 	readonly #exact = new Map<string, ExactChannel>();
 	readonly #listeners = new Set<EnvelopeListener>();
 	readonly #replay: ActionEnvelope[] = [];
@@ -95,10 +112,24 @@ export class StateStore {
 		return [...this.#sessions.keys()];
 	}
 
-	/** Registers a new session and its default chat without emitting actions. */
-	addSession(id: string, session: SessionState, chat: ChatState): void {
-		this.#sessions.set(id, session);
+	/**
+	 * Registers a new session, its default chat and its annotations channel
+	 * without emitting actions. The session state gets the channel's summary.
+	 */
+	addSession(id: string, session: SessionState, chat: ChatState, annotations: readonly Annotation[] = []): void {
+		this.#sessions.set(id, { ...session, annotations: annotationsSummary(this.annotationsResource(id), annotations) });
 		this.#chats.set(id, chat);
+		this.#annotations.set(id, { annotations: [...annotations] });
+	}
+
+	/** A session's annotations channel state. */
+	annotations(sessionId: string): AnnotationsState | undefined {
+		return this.#annotations.get(sessionId);
+	}
+
+	/** The URI a session's annotations channel is published at. */
+	annotationsResource(sessionId: string): string {
+		return annotationsUri(sessionId, this.#schemeOf(sessionId));
 	}
 
 	/**
@@ -115,6 +146,7 @@ export class StateStore {
 	removeSession(id: string): void {
 		this.#sessions.delete(id);
 		this.#chats.delete(id);
+		this.#annotations.delete(id);
 		for (const [uri, ref] of this.#forkRefs) {
 			if (ref.sessionId !== id) continue;
 			this.#chats.delete(ref.chatId);
@@ -197,6 +229,10 @@ export class StateStore {
 				const state = this.#chats.get(ref.chatId);
 				return state && { resource: this.chatResource(ref), state, fromSeq };
 			}
+			case "annotations": {
+				const state = this.#annotations.get(ref.sessionId);
+				return state && { resource: this.annotationsResource(ref.sessionId), state, fromSeq };
+			}
 			default:
 				return undefined;
 		}
@@ -236,6 +272,21 @@ export class StateStore {
 				if (!state) return undefined;
 				this.#chats.set(ref.chatId, chatReducer(state, action as ChatAction));
 				resource = this.chatResource(ref);
+				break;
+			}
+			case "annotations": {
+				const state = this.#annotations.get(ref.sessionId);
+				if (!state) return undefined;
+				const next = annotationsReducer(state, action as AnnotationsAction);
+				this.#annotations.set(ref.sessionId, next);
+				resource = this.annotationsResource(ref.sessionId);
+				// AHP has no action that sets `SessionState.annotations`; clients follow it through the root summary.
+				const session = this.#sessions.get(ref.sessionId);
+				if (session)
+					this.#sessions.set(ref.sessionId, {
+						...session,
+						annotations: annotationsSummary(resource, next.annotations),
+					});
 				break;
 			}
 			default:
