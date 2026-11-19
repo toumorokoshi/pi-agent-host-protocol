@@ -827,8 +827,14 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		if (exact?.kind === "resourceWatch") return unsupported;
 		if (this.store.ref(channel).kind !== "root") await this.#load(channel).catch(() => undefined);
 		let ref = this.store.ref(channel);
-		// VS Code addresses session renames to the chat; AHP defines them on the session.
+		// VS Code renames a chat with `session/titleChanged` on its chat channel. A
+		// forked chat is renamed on its own; the default chat renames its session.
 		if (ref.kind === "chat" && action.type === ActionType.SessionTitleChanged) {
+			const fork = ref.chatId === ref.sessionId ? undefined : this.#chat(ref);
+			if (fork) {
+				fork.renameChat(action.title);
+				return { kind: "accepted" };
+			}
 			ref = { kind: "session", sessionId: ref.sessionId };
 		}
 		switch (ref.kind) {

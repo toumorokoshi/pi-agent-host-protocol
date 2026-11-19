@@ -3,6 +3,8 @@ import type { SessionEntry, SessionManager, SlashCommandInfo } from "@earendil-w
 import {
 	ActionType,
 	type ChatAction,
+	type ChatInputAnswer,
+	ChatInputResponseKind,
 	ChatOriginKind,
 	type ChatState,
 	type ChatSummary,
@@ -34,6 +36,16 @@ import {
 	userCommands,
 	withFrontmatter,
 } from "./customizations.ts";
+import {
+	CANCELLED,
+	dialogAnswer,
+	dialogRequest,
+	type NotifyLevel,
+	noticeMarkdown,
+	type PiDialog,
+	type PiDialogAnswer,
+	type PiUiHandler,
+} from "./dialogs.ts";
 import { forkKeep, forkLeaf, forkTurnError } from "./forks.ts";
 import { turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
@@ -69,6 +81,14 @@ interface ActiveTurn {
 	readonly startedAt: number;
 	/** Set when the client already ended the turn with `chat/turnCancelled`. */
 	cancelledByClient: boolean;
+}
+
+/** An extension dialog shown as an input request in a turn, waiting for the user. */
+interface OpenDialog {
+	readonly turn: ActiveTurn;
+	readonly dialog: PiDialog;
+	readonly resolve: (answer: PiDialogAnswer) => void;
+	readonly timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 /** What a run does: send a new user message, or continue a turn that ended in a resumable error. */
@@ -138,6 +158,12 @@ export class PiSession {
 	 * first observed; before that, those read for the session's folder.
 	 */
 	#commands: Promise<readonly UserCommand[]> | undefined;
+	/** Extension dialogs open in the current host run, by pi's request id. */
+	readonly #dialogs = new Map<string, OpenDialog>();
+	readonly #ui: PiUiHandler = {
+		dialog: (dialog) => this.#openDialog(dialog),
+		notify: (message, level) => this.#notify(message, level),
+	};
 	#disposed = false;
 	#hasTurns: boolean;
 	/** When a client or pi last used the session, for stopping idle pi processes. */
@@ -396,6 +422,9 @@ export class PiSession {
 				}
 				return undefined;
 			}
+			case ActionType.ChatInputAnswerChanged:
+			case ActionType.ChatInputCompleted:
+				return this.#dialogs.has(action.requestId) ? undefined : "No open input request";
 			case ActionType.ChatTruncated:
 				// The bridge cannot run the extension command that moves pi's leaf.
 				if (this.#tuiAgent) return "Not supported while the session is open in a pi terminal";
@@ -418,9 +447,13 @@ export class PiSession {
 			case ActionType.ChatTurnResume:
 				this.#runTurn(action.turnId, { kind: "resume" });
 				break;
+			case ActionType.ChatInputCompleted:
+				this.#answerDialog(action.requestId, action.response, action.answers);
+				break;
 			case ActionType.ChatTurnCancelled:
 				if (this.#turn?.id === action.turnId) {
 					this.#turn.cancelledByClient = true;
+					this.#closeDialogs();
 					this.#ctx.logger.debug("turn cancelled by client", { session: this.id, turn: action.turnId });
 					this.#turn = undefined;
 					this.#ctx.activityChanged();
@@ -445,6 +478,15 @@ export class PiSession {
 			default:
 				break;
 		}
+	}
+
+	/** Renames this chat alone, as for a forked chat, leaving its session's title unchanged. */
+	renameChat(title: string): void {
+		this.#touch();
+		this.#saveTitle(title);
+		this.#ctx.store.setChatTitle(this.id, title);
+		this.#dispatchSession({ type: ActionType.SessionChatUpdated, chat: this.chat, changes: { title } });
+		this.#syncCatalog();
 	}
 
 	/** Side effects of an accepted client session action (already applied to state). */
@@ -618,6 +660,7 @@ export class PiSession {
 
 	async dispose(): Promise<void> {
 		this.#disposed = true;
+		this.#closeDialogs();
 		const agent = this.#agent;
 		this.#agent = undefined;
 		if (agent) {
@@ -632,8 +675,12 @@ export class PiSession {
 	/** The running agent, starting one if there is none or the last one's pi process exited. */
 	#ensureAgent(): Promise<PiAgent> {
 		if (this.#disposed) return Promise.reject(new Error("Session disposed"));
+		// A pi in a terminal shows its own dialogs, so only agents the host starts get the handler.
 		const start = () =>
-			this.#ctx.backend.startAgent(this.cwd, this.#sessionManager).then((agent) => this.#observe(agent));
+			this.#ctx.backend.startAgent(this.cwd, this.#sessionManager).then((agent) => {
+				agent.setUiHandler?.(this.#ui);
+				return this.#observe(agent);
+			});
 		const previous = this.#agent;
 		const agent = previous ? previous.then((current) => (current.closed ? start() : current)) : start();
 		this.#agent = agent;
@@ -737,6 +784,7 @@ export class PiSession {
 		}
 		if (!promptSeen) this.#unrecorded.add(first.id);
 		this.#hasTurns = true;
+		this.#closeDialogs();
 		if (!turn.cancelledByClient) turn.mapper.finish(outcome, Date.now() - turn.startedAt);
 		if (!turn.cancelledByClient && outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;
 		this.#ctx.logger.debug("turn finished", {
@@ -769,6 +817,7 @@ export class PiSession {
 		const running = this.#turn;
 		if (running) {
 			running.cancelledByClient = true;
+			this.#closeDialogs();
 			this.#turn = undefined;
 			this.#ctx.activityChanged();
 			void this.#agent?.then((agent) => agent.abort()).catch(() => {});
@@ -796,6 +845,7 @@ export class PiSession {
 		const sent = this.#steered.shift();
 		const message: Message = sent ?? { text, origin: { kind: MessageKind.User } };
 		this.#hasTurns = true;
+		this.#closeDialogs();
 		previous.mapper.finish({ kind: "complete" }, Date.now() - previous.startedAt);
 		const turnId = crypto.randomUUID();
 		const mapper = new TurnMapper(turnId, (action) => {
@@ -807,6 +857,78 @@ export class PiSession {
 		this.#ctx.logger.debug("steering message started a turn", { session: this.id, from: previous.id, turn: turnId });
 		this.#syncSummary();
 		return turn;
+	}
+
+	/**
+	 * Shows an extension dialog as an input request in the running host
+	 * turn. Clients add input requests only to an active turn, so outside
+	 * one (and while a client cancels) the dialog is left to be cancelled.
+	 * pi drops a dialog when its timeout passes, so the request is withdrawn
+	 * then too. See specs/extension-dialogs.md.
+	 */
+	#openDialog(dialog: PiDialog): Promise<PiDialogAnswer> | undefined {
+		const turn = this.#turn;
+		if (!this.#hostRun || !turn || turn.cancelledByClient || this.#dialogs.has(dialog.id)) return undefined;
+		return new Promise((resolve) => {
+			const timer = dialog.timeout ? setTimeout(() => this.#closeDialog(dialog.id), dialog.timeout) : undefined;
+			this.#dialogs.set(dialog.id, { turn, dialog, resolve, timer });
+			this.#ctx.logger.debug("extension dialog shown", { session: this.id, turn: turn.id, method: dialog.method });
+			this.#dispatchChat({ type: ActionType.ChatInputRequested, request: dialogRequest(dialog) });
+			this.#syncSummary();
+		});
+	}
+
+	/** Answers pi from the request the client completed, with its final answers. */
+	#answerDialog(
+		requestId: string,
+		response: ChatInputResponseKind,
+		answers: Readonly<Record<string, ChatInputAnswer>> | undefined,
+	): void {
+		const open = this.#dialogs.get(requestId);
+		if (!open) return;
+		const part = this.#ctx.store
+			.chat(this.id)
+			?.activeTurn?.responseParts.find(
+				(candidate) => candidate.kind === ResponsePartKind.InputRequest && candidate.request.id === requestId,
+			);
+		const final = part?.kind === ResponsePartKind.InputRequest ? part.request.answers : answers;
+		this.#dialogs.delete(requestId);
+		clearTimeout(open.timer);
+		open.resolve(dialogAnswer(open.dialog, response, final));
+		this.#ctx.logger.debug("extension dialog answered", { session: this.id, method: open.dialog.method, response });
+		this.#syncSummary();
+	}
+
+	/**
+	 * Cancels a dialog the user has not answered: pi gets `cancelled`, and
+	 * the request is marked cancelled while its turn is still the client's
+	 * active turn.
+	 */
+	#closeDialog(requestId: string): void {
+		const open = this.#dialogs.get(requestId);
+		if (!open) return;
+		this.#dialogs.delete(requestId);
+		clearTimeout(open.timer);
+		if (this.#turn === open.turn && !open.turn.cancelledByClient) {
+			this.#dispatchChat({ type: ActionType.ChatInputCompleted, requestId, response: ChatInputResponseKind.Cancel });
+			this.#syncSummary();
+		}
+		open.resolve(CANCELLED);
+	}
+
+	/** Cancels every open dialog, before the turn they belong to ends. */
+	#closeDialogs(): void {
+		for (const requestId of [...this.#dialogs.keys()]) this.#closeDialog(requestId);
+	}
+
+	/** Adds an extension's notification to the running host turn; other notifications are only logged. */
+	#notify(message: string, level: NotifyLevel): void {
+		const turn = this.#turn;
+		if (this.#hostRun && turn && !turn.cancelledByClient) {
+			turn.mapper.notice(noticeMarkdown(message, level));
+			return;
+		}
+		this.#ctx.logger.debug("extension notification outside a turn", { session: this.id, level, message });
 	}
 
 	/** Watches an agent for runs started outside the host. Returns the agent. */

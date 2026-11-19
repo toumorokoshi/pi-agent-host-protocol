@@ -42,7 +42,7 @@ This is the previous behaviour, moved behind the shim. `createAgentSession` runs
 - **Models.** A short-lived `pi --mode rpc --no-session` answers `get_available_models`. The result is cached for 30 s, because clients ask on every `initialize`.
 - **Runs.** `prompt` registers an `agent_settled` waiter before sending the command, then waits for it. A `handled` disposition (an extension command) returns immediately.
 - **Crashes.** If a child exits, pending commands and the active run fail, and the turn ends with a final (non-resumable) `chat/error`: `pi exited with code N: <stderr tail>`. `PiAgent.closed` becomes true, and the session's next turn starts a new child on the same session file.
-- **Extension dialogs.** `extension_ui_request` dialogs (`select`, `confirm`, `input`, `editor`) are answered with `cancelled: true`, so they resolve with their defaults as in embedded mode. Fire-and-forget UI requests are ignored.
+- **Extension dialogs.** `extension_ui_request` dialogs (`select`, `confirm`, `input`, `editor`) go to the session's UI handler, which shows them as input requests during a host turn ([extension-dialogs.md](extension-dialogs.md)). Without a handler, or outside a turn, they are answered with `cancelled: true`, so they resolve with their defaults as in embedded mode. `notify` goes to the handler too; the other fire-and-forget UI requests are ignored.
 - **Logging.** Child stderr is logged at debug as `pi stderr`; stdout carries only protocol records.
 - **Shutdown.** `dispose` closes the child's stdin (pi's orderly shutdown), then sends SIGTERM and finally SIGKILL, each after a 2 s grace period.
 

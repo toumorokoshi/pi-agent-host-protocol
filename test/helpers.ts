@@ -78,13 +78,18 @@ export async function startHost(
 		bridge?: boolean;
 		idleTimeoutMs?: number;
 		now?: () => number;
+		/** Extra pi extensions the RPC child loads (rpc mode only). */
+		extensions?: readonly string[];
 	} = {},
 ): Promise<TestHost> {
 	const mode = options.mode ?? "rpc";
 	const dir = options.dir ?? (await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-test-")));
 	const cwd = join(dir, "workspace");
 	await mkdir(cwd, { recursive: true });
-	const started = mode === "rpc" ? await startRpcBackend(dir, cwd, options.logger) : await startEmbeddedBackend(dir);
+	const started =
+		mode === "rpc"
+			? await startRpcBackend(dir, cwd, options.logger, options.extensions ?? [])
+			: await startEmbeddedBackend(dir);
 	const host = new AgentHost({
 		backend: started.backend,
 		defaultDirectory: cwd,
@@ -149,7 +154,12 @@ async function startEmbeddedBackend(dir: string): Promise<StartedBackend> {
  * Runs pi's real CLI in RPC mode. The child loads `fixtures/faux-provider.ts`,
  * which asks this process for each response, so factories still run here.
  */
-async function startRpcBackend(dir: string, cwd: string, logger: Logger | undefined): Promise<StartedBackend> {
+async function startRpcBackend(
+	dir: string,
+	cwd: string,
+	logger: Logger | undefined,
+	extensions: readonly string[],
+): Promise<StartedBackend> {
 	const agentDir = join(dir, "agent");
 	await mkdir(agentDir, { recursive: true });
 	await writeFile(join(agentDir, "auth.json"), JSON.stringify({ faux: { type: "api_key", key: "test-key" } }));
@@ -179,7 +189,15 @@ async function startRpcBackend(dir: string, cwd: string, logger: Logger | undefi
 		pi: PI_CLI,
 		agentDir,
 		sessionDir: join(dir, "sessions"),
-		args: ["-e", FAUX_EXTENSION, "--provider", "faux", "--model", "faux-1"],
+		args: [
+			"-e",
+			FAUX_EXTENSION,
+			...extensions.flatMap((extension) => ["-e", extension]),
+			"--provider",
+			"faux",
+			"--model",
+			"faux-1",
+		],
 		env: { PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_AGENT_HOST_PROTOCOL_FAUX_URL: `http://127.0.0.1:${port}/` },
 		cwd,
 		logger,

@@ -1,6 +1,7 @@
 import type { JsonAgentSessionEvent, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { Logger } from "../core/logger.ts";
 import type { PiAgent, PiEvent, PromptInput } from "./agent.ts";
+import { CANCELLED, notifyLevel, type PiDialogAnswer, type PiUiHandler, parseDialog } from "./dialogs.ts";
 import { RESUME_COMMAND, TRUNCATE_COMMAND } from "./extensions/ahp-resume.ts";
 import type { ThinkingLevel } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
@@ -71,6 +72,7 @@ export class RpcAgent implements PiAgent {
 	readonly #settleWaiters = new Set<SettleWaiter>();
 	#model: { provider: string; id: string } | undefined;
 	#thinkingLevel: string | undefined;
+	#ui: PiUiHandler | undefined;
 	readonly backgroundProcesses: (() => Promise<BackgroundProcess[]>) | undefined;
 
 	constructor(
@@ -211,10 +213,31 @@ export class RpcAgent implements PiAgent {
 		}
 	}
 
-	/** There is no UI on the host side: dialogs are dismissed so they resolve with their defaults. */
+	setUiHandler(handler: PiUiHandler | undefined): void {
+		this.#ui = handler;
+	}
+
+	/**
+	 * Passes notifications and dialogs to the UI handler. A dialog it cannot
+	 * show, or one that is malformed, is cancelled so it resolves with its
+	 * default, as it did before the host showed dialogs.
+	 */
 	#onExtensionUi(record: RpcRecord): void {
+		if (record.method === "notify") {
+			if (typeof record.message === "string") this.#ui?.notify(record.message, notifyLevel(record.notifyType));
+			return;
+		}
 		if (typeof record.method !== "string" || !DIALOG_METHODS.has(record.method)) return;
-		this.#logger.debug("extension dialog dismissed", { method: record.method });
-		this.#child.send({ type: "extension_ui_response", id: record.id, cancelled: true });
+		const respond = (answer: PiDialogAnswer) => {
+			if (!this.#child.closed) this.#child.send({ type: "extension_ui_response", id: record.id, ...answer });
+		};
+		const dialog = parseDialog(record);
+		const answer = dialog && this.#ui?.dialog(dialog);
+		if (!answer) {
+			this.#logger.debug("extension dialog dismissed", { method: record.method });
+			respond(CANCELLED);
+			return;
+		}
+		answer.then(respond, () => respond(CANCELLED));
 	}
 }

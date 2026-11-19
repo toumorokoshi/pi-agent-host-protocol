@@ -15,7 +15,7 @@ Known issues and features not yet implemented.
 - **`disposeSession`** only discards empty sessions, and pi session files are never deleted (see the README).
 - **No paging:** `fetchTurns` does not page, so history is sent in full.
 - **History gaps:** compaction summaries, custom messages and bash executions are not shown in reloaded history.
-- **pi extension dialogs** resolve with their defaults in host sessions.
+- **pi extension dialogs** resolve with their defaults in embedded mode. See [Extension dialogs](#extension-dialogs) for rpc mode.
 - **File edits** are shown as text results, not file diffs.
 - **Not implemented:** changesets, MCP and automations.
 - **Activity text is English only and based on tool names:** custom tools from extensions show `Running <tool>`. Retries and compaction have no activity text of their own.
@@ -43,8 +43,6 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
   - `startedAt` is when the host first saw the process, up to 5 s late, or when the turn that started it ended.
   - Nothing is reported for embedded sessions or pi terminals: their children are the host's or the terminal's own.
   - Each refresh runs `ps` once per running pi, every 5 s and at each turn start and end.
-- **Extension dialogs are not forwarded (rpc):** pi sends them over RPC, but the host dismisses them. They could be mapped to AHP input requests.
-- **Dialog dismissal is untested:** no test drives an extension that opens a dialog in an RPC child.
 - **Model list cache (rpc):** models are cached for 30 s, so a provider added in pi shows up after that.
 - **Session title of a running rpc session** is read from the session file only when the session is loaded. A rename made inside pi (for example by an extension) is not reflected until the host reloads the session.
 - **Agent directory not detected (rpc):** the host does not ask the `pi` executable which agent directory it uses. If the installed `pi` defaults to a different directory than `~/.pi/agent` (for example a build with `userConfigDir: ".av-pi"`), pass `--agent-dir`, or saved sessions vanish from the list after a restart.
@@ -80,8 +78,6 @@ See [specs/forks.md](specs/forks.md).
 - **Fork point after an edit:** the fork point is found on the source file's current branch. Right after `chat/truncated`, before the edited message is written, pi's file still ends on the abandoned branch, so a fork made in that moment counts along the old branch.
 - **Origin turn ids:** a fork's `origin.turnId` is the id the client knew when forking. Turns started in this host run have client ids, which become pi's entry ids when the session is reloaded, so after a restart the origin can name a turn the source chat no longer lists by that id.
 - **Fork files in pi:** each fork is an ordinary pi session (with `parentSession` set), so `pi --resume` lists it. Opening one in a pi terminal while the bridge runs attaches it as a session of its own, not as a chat of its session.
-- **Renaming a fork:** VS Code sends renames to the chat channel, which the host applies to the session, so renaming a fork that way renames its session.
-
 ## Skills and prompt templates
 
 - **No refresh on `/reload`:** the list is read once per pi process. Skills added later, or reloaded in a pi terminal with `/reload`, appear only when pi next starts for that session.
@@ -89,11 +85,22 @@ See [specs/forks.md](specs/forks.md).
 - **Read-only:** `session/customizationToggled` is rejected (pi cannot disable one skill per session), and clients cannot create skills in the listed directories.
 - **Root-level listing is global only:** `AgentInfo.customizations` holds pi's global skills and prompt templates (read from an empty folder), so a new session's project skills appear only once it starts. In embedded mode, skills added by extensions are left out there. Each refresh costs a short-lived pi in rpc mode (cached for 30 seconds).
 - **Project trust in host sessions:** `pi --mode rpc` skips project skills unless the project is trusted (`/trust` or `defaultProjectTrust: "always"`). The host could offer a setting to pass `--approve`.
-- **Extension commands** are neither listed nor completed.
+- **Extension commands are completed but not listed:** they have no file, so they are not customizations.
+- **At most 50 completions:** a bare `/` in a folder with hundreds of skills lists prompt templates and extension commands first, then the first skills by name. The rest appear as the user types more of the name.
 - **Not yet confirmed in VS Code:** completions were checked against the live host and VS Code's source, but not yet in a reloaded Agents window. VS Code reuses the `InitializeResult` from its first handshake, so a window that last initialized against an older host needs one `NotFound` reconnect (now automatic) or a window reload.
 - **Skill argument hints are not shown:** VS Code shows `argumentHint` only for command items, and skills are sent as skill references to get a skill chip. A skill's `argument-hint` is read but not displayed.
 - **Mid-message skills need the chip:** a skill later in a message is loaded only when it was picked from the completion list. Typing `/skill:<name>` there by hand, or pi terminal input, is not expanded. Prompt templates still work only at the start.
 - **`/name` vs `/skill:name`:** VS Code's hosts insert `/<skill-name>`, while this host inserts `/skill:<name>` because pi expands only that form. Typing `/yft-pr-commit-description` by hand is therefore not expanded by pi.
+
+## Extension dialogs
+
+See [specs/extension-dialogs.md](specs/extension-dialogs.md).
+
+- **rpc host turns only:** embedded sessions and pi terminal sessions do not forward dialogs, and a dialog an extension opens outside a turn (for example at startup or from a timer) is dismissed.
+- **No status line or widgets:** `setStatus`, `setWidget`, `setTitle` and `set_editor_text` are ignored. An extension's footer status, such as a plan's progress, is not shown.
+- **Notifications outside a turn** are logged only, and ones pi sends while it starts (such as an extension's greeting) are dropped. One an extension sends just after its turn was cancelled can appear in the next turn.
+- **No multi-line editor:** `editor` dialogs are a text question with the prefill as its default value. VS Code may show it as a single-line field.
+- **Not yet tried in a real VS Code window**, only against the test client and VS Code's source.
 
 ## Terminals and resource watches
 

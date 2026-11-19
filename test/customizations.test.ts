@@ -8,14 +8,17 @@ import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { MessageAttachmentKind, MessageKind, type SimpleMessageAttachment } from "@microsoft/agent-host-protocol";
 import { fileUri } from "../src/core/uris.ts";
 import {
+	COMPLETION_LIMIT,
 	completionMeta,
 	containerDir,
+	type ExtensionCommand,
+	type FileCommand,
+	isFileCommand,
 	referencedSkills,
 	skillBlock,
 	skillBlocks,
 	slashCompletions,
 	toCustomizations,
-	type UserCommand,
 	userCommands,
 	withFrontmatter,
 	withFrontmatterFields,
@@ -32,42 +35,59 @@ function info(name: string, source: SlashCommandInfo["source"], path: string, ba
 	};
 }
 
-const SKILL: UserCommand = {
+const SKILL: FileCommand = {
 	name: "skill:pdf",
 	description: "Work with PDFs",
 	kind: "skill",
 	path: "/home/u/.pi/agent/skills/pdf/SKILL.md",
 	baseDir: "/home/u/.pi/agent",
 };
-const NESTED_SKILL: UserCommand = {
+const NESTED_SKILL: FileCommand = {
 	name: "skill:inner",
 	kind: "skill",
 	path: "/home/u/.pi/agent/skills/group/inner/SKILL.md",
 	baseDir: "/home/u/.pi/agent",
 };
-const PROMPT: UserCommand = {
+const PROMPT: FileCommand = {
 	name: "fix-tests",
 	description: "Fix failing tests",
 	kind: "prompt",
 	path: "/home/u/.pi/agent/prompts/fix-tests.md",
 	baseDir: "/home/u/.pi/agent",
 };
-const LOOSE_SKILL: UserCommand = { name: "skill:loose", kind: "skill", path: "/opt/skills/loose/SKILL.md" };
+const LOOSE_SKILL: FileCommand = { name: "skill:loose", kind: "skill", path: "/opt/skills/loose/SKILL.md" };
+const EXTENSION: ExtensionCommand = { name: "plan", description: "Plan before acting", kind: "extension" };
 
 describe("pi commands as customizations", () => {
-	test("keeps skills and prompt templates and drops extension commands", () => {
+	test("keeps skills, prompt templates and extension commands, but not the host's own", () => {
 		const commands = userCommands([
-			info("mcp", "extension", "builtin:mcp"),
+			info("plan", "extension", "/ext/plan.ts"),
+			info("ahp", "extension", "/ext/ahp.ts"),
+			info("ahp-resume", "extension", "/ext/ahp-resume.ts"),
 			info("skill:pdf", "skill", SKILL.path, SKILL.baseDir),
 			info("fix-tests", "prompt", PROMPT.path, PROMPT.baseDir),
 		]);
-		assert.deepEqual(
-			commands.map((command) => [command.name, command.kind, command.baseDir]),
-			[
-				["skill:pdf", "skill", "/home/u/.pi/agent"],
-				["fix-tests", "prompt", "/home/u/.pi/agent"],
-			],
-		);
+		assert.deepEqual(commands, [
+			{ name: "plan", description: "plan description", kind: "extension" },
+			{
+				name: "skill:pdf",
+				description: "skill:pdf description",
+				kind: "skill",
+				path: SKILL.path,
+				baseDir: SKILL.baseDir,
+			},
+			{
+				name: "fix-tests",
+				description: "fix-tests description",
+				kind: "prompt",
+				path: PROMPT.path,
+				baseDir: PROMPT.baseDir,
+			},
+		]);
+	});
+
+	test("publishes no customization for extension commands", () => {
+		assert.deepEqual(toCustomizations([EXTENSION]), []);
 	});
 
 	test("groups each command under the folder pi discovered it in", () => {
@@ -139,12 +159,15 @@ describe("pi commands as customizations", () => {
 			const auto = join(dir, "auto.md");
 			await writeFile(manual, "---\nname: manual\ndescription: d\ndisable-model-invocation: true\n---\nbody\n");
 			await writeFile(auto, "---\nname: auto\ndescription: d\n---\nbody\n");
-			const [first, second, missing, prompt] = await withFrontmatter([
+			const read = await withFrontmatter([
 				{ ...SKILL, path: manual },
 				{ ...SKILL, path: auto },
 				{ ...SKILL, path: join(dir, "missing.md") },
 				{ ...PROMPT, path: manual },
+				EXTENSION,
 			]);
+			assert.deepEqual(read[4], EXTENSION);
+			const [first, second, missing, prompt] = read.filter(isFileCommand);
 			assert.equal(first?.disableModelInvocation, true);
 			assert.equal(second?.disableModelInvocation, undefined);
 			assert.equal(missing?.disableModelInvocation, undefined);
@@ -163,6 +186,43 @@ describe("slash completions", () => {
 			slashCompletions(commands, "/", 1).map((item) => item.insertText),
 			["/fix-tests ", "/skill:inner ", "/skill:pdf "],
 		);
+	});
+
+	test("ranks prompt templates, then extension commands, then skills", () => {
+		const prompt = { ...PROMPT, name: "zed" };
+		assert.deepEqual(
+			slashCompletions([SKILL, EXTENSION, prompt, { ...EXTENSION, name: "goal" }], "/", 1).map(
+				(item) => item.insertText,
+			),
+			["/zed ", "/goal ", "/plan ", "/skill:pdf "],
+		);
+	});
+
+	test("returns at most COMPLETION_LIMIT items, dropping the lowest ranked", () => {
+		const skills = Array.from(
+			{ length: COMPLETION_LIMIT },
+			(_, index): FileCommand => ({
+				...SKILL,
+				name: `skill:s${String(index).padStart(3, "0")}`,
+			}),
+		);
+		const items = slashCompletions([...skills, PROMPT, EXTENSION], "/", 1);
+		assert.equal(items.length, COMPLETION_LIMIT);
+		assert.deepEqual(
+			items.slice(0, 3).map((item) => item.insertText),
+			["/fix-tests ", "/plan ", "/skill:s000 "],
+		);
+		assert.equal(items.at(-1)?.insertText, `/skill:s${String(COMPLETION_LIMIT - 3).padStart(3, "0")} `);
+	});
+
+	test("completes extension commands only at the start, as commands", () => {
+		const [item] = slashCompletions([EXTENSION], "/pl", 3);
+		assert.deepEqual(item?.attachment, {
+			type: "simple",
+			label: "/plan",
+			_meta: { command: "plan", description: "Plan before acting" },
+		});
+		assert.deepEqual(slashCompletions([EXTENSION], "then /pl", 8), []);
 	});
 
 	test("matches skill names with or without the skill: prefix", () => {
@@ -448,7 +508,7 @@ for (const mode of PI_MODES) {
 }
 
 describe("accepted completions in a sent message", () => {
-	const chip = (command: UserCommand): SimpleMessageAttachment => ({
+	const chip = (command: FileCommand): SimpleMessageAttachment => ({
 		type: MessageAttachmentKind.Simple,
 		label: `/${command.name}`,
 		displayKind: "skill",
@@ -493,7 +553,7 @@ describe("accepted completions in a sent message", () => {
 		try {
 			const path = join(dir, "SKILL.md");
 			await writeFile(path, "---\nname: real\n---\nBody.\n");
-			const real: UserCommand = { name: "skill:real", kind: "skill", path };
+			const real: FileCommand = { name: "skill:real", kind: "skill", path };
 			assert.deepEqual(await skillBlocks([real, { ...real, path: join(dir, "missing.md") }]), [
 				skillBlock(real, "Body."),
 			]);
