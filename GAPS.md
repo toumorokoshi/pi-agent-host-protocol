@@ -80,8 +80,6 @@ See [specs/forks.md](specs/forks.md).
 - **Fork point after an edit:** the fork point is found on the source file's current branch. Right after `chat/truncated`, before the edited message is written, pi's file still ends on the abandoned branch, so a fork made in that moment counts along the old branch.
 - **Origin turn ids:** a fork's `origin.turnId` is the id the client knew when forking. Turns started in this host run have client ids, which become pi's entry ids when the session is reloaded, so after a restart the origin can name a turn the source chat no longer lists by that id.
 - **Fork files in pi:** each fork is an ordinary pi session (with `parentSession` set), so `pi --resume` lists it. Opening one in a pi terminal while the bridge runs attaches it as a session of its own, not as a chat of its session.
-- **Renaming a fork:** VS Code sends renames to the chat channel, which the host applies to the session, so renaming a fork that way renames its session.
-
 ## Skills and prompt templates
 
 - **No refresh on `/reload`:** the list is read once per pi process. Skills added later, or reloaded in a pi terminal with `/reload`, appear only when pi next starts for that session.
@@ -89,7 +87,8 @@ See [specs/forks.md](specs/forks.md).
 - **Read-only:** `session/customizationToggled` is rejected (pi cannot disable one skill per session), and clients cannot create skills in the listed directories.
 - **Root-level listing is global only:** `AgentInfo.customizations` holds pi's global skills and prompt templates (read from an empty folder), so a new session's project skills appear only once it starts. In embedded mode, skills added by extensions are left out there. Each refresh costs a short-lived pi in rpc mode (cached for 30 seconds).
 - **Project trust in host sessions:** `pi --mode rpc` skips project skills unless the project is trusted (`/trust` or `defaultProjectTrust: "always"`). The host could offer a setting to pass `--approve`.
-- **Extension commands** are neither listed nor completed.
+- **Extension commands are completed but not listed:** they have no file, so they are not customizations. Their menus and confirmations need dialogs, which the host does not show (each is answered as cancelled).
+- **At most 50 completions:** a bare `/` in a folder with hundreds of skills lists prompt templates and extension commands first, then the first skills by name. The rest appear as the user types more of the name.
 - **Not yet confirmed in VS Code:** completions were checked against the live host and VS Code's source, but not yet in a reloaded Agents window. VS Code reuses the `InitializeResult` from its first handshake, so a window that last initialized against an older host needs one `NotFound` reconnect (now automatic) or a window reload.
 - **Skill argument hints are not shown:** VS Code shows `argumentHint` only for command items, and skills are sent as skill references to get a skill chip. A skill's `argument-hint` is read but not displayed.
 - **Mid-message skills need the chip:** a skill later in a message is loaded only when it was picked from the completion list. Typing `/skill:<name>` there by hand, or pi terminal input, is not expanded. Prompt templates still work only at the start.

@@ -155,7 +155,7 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 | `listSessions` | supported | Live sessions plus pi sessions on disk, newest first, paginated. |
 | `fetchTurns` | stub | History is always sent in full, so there are never older turns to page in. |
 | `resolveSessionConfig` / `sessionConfigCompletions` | stub | No session config options; models and thinking level are chosen per message instead. |
-| `completions` | partial | `/` at the start of a user message completes pi's skills and prompt templates. Other text gets no items. |
+| `completions` | partial | `/` at the start of a user message completes pi's prompt templates, extension commands and skills (in that order, at most 50); later in the message, skills only. Other text gets no items. |
 | `authenticate` | stub | Accepted; pi manages model credentials itself. |
 | `resourceRead` / `resourceList` / `resourceResolve` | supported | Host-local `file:` URIs only. |
 | `resourceWrite` / `resourceCopy` / `resourceDelete` / `resourceMove` / `resourceMkdir` / `resourceRequest` | refused | `PermissionDenied` (`-32009`). |
@@ -171,7 +171,7 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 | Channel | Accepted | Rejected |
 |---|---|---|
 | Chat | `chat/turnStarted`, `chat/turnCancelled`, `chat/turnResume` (after a resumable model-server error), `chat/truncated` (not while a pi terminal drives the session), `chat/pendingMessageSet` / `chat/pendingMessageRemoved` (steering and queued messages), `chat/queuedMessagesReordered`, `chat/draftChanged`, `chat/isReadChanged`, `chat/isArchivedChanged` | `chat/toolCallConfirmed` and `chat/toolCallResultConfirmed` (tools never wait for approval), input requests, working-directory changes, client-executed tools |
-| Session | `session/titleChanged` (saved to pi; VS Code's form addressed to the chat is also accepted), `session/isReadChanged`, `session/isArchivedChanged`, `session/activeClientSet` / `session/activeClientRemoved`, `session/configChanged` | Working-directory, customization and MCP actions |
+| Session | `session/titleChanged` (saved to pi; VS Code's form addressed to a chat renames a forked chat alone, or the session for its default chat), `session/isReadChanged`, `session/isArchivedChanged`, `session/activeClientSet` / `session/activeClientRemoved`, `session/configChanged` | Working-directory, customization and MCP actions |
 | Terminal | `terminal/input`, `terminal/resized`, `terminal/claimed`, `terminal/titleChanged`, `terminal/cleared` | Host-only actions such as `terminal/data` |
 | Root | `root/configChanged` (no root config exists, so it has no effect) | Everything else |
 | Resource watch | None | Everything |

@@ -447,6 +447,15 @@ export class PiSession {
 		}
 	}
 
+	/** Renames this chat alone, as for a forked chat, leaving its session's title unchanged. */
+	renameChat(title: string): void {
+		this.#touch();
+		this.#saveTitle(title);
+		this.#ctx.store.setChatTitle(this.id, title);
+		this.#dispatchSession({ type: ActionType.SessionChatUpdated, chat: this.chat, changes: { title } });
+		this.#syncCatalog();
+	}
+
 	/** Side effects of an accepted client session action (already applied to state). */
 	onSessionAction(action: StateAction): void {
 		this.#touch();

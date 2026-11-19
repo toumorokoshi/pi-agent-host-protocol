@@ -37,7 +37,10 @@ export function sessionSchemeOf(uri: string): SessionScheme | undefined {
 	return scheme === "ahp-session" ? "ahp-session" : scheme === PROVIDER ? PROVIDER : undefined;
 }
 const CANONICAL_CHAT_URI = /^ahp-chat:\/([^/?#]+)$/i;
-const DERIVED_CHAT_URI = /^ahp-chat:\/\/[^/]+\/([^/?#]+)$/i;
+// Only the `default` authority names a session's default chat. VS Code
+// names other chats `ahp-chat://<chatId>/<base64url(sessionUri)>`, which
+// only the state store's fork records resolve.
+const DERIVED_CHAT_URI = /^ahp-chat:\/\/default\/([^/?#]+)$/i;
 
 /** Returns the session id addressed by a session URI, or `undefined`. */
 export function parseSessionUri(uri: string): string | undefined {

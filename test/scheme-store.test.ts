@@ -25,6 +25,12 @@ describe("session URI schemes", () => {
 		assert.notEqual(chatUri("s", "ahp-session"), chatUri("s"));
 		assert.equal(parseChatUri(chatUri("s", "ahp-session")), "s");
 	});
+
+	test("reads only the default authority as a session's default chat", () => {
+		const encoded = Buffer.from(sessionUri("s", "ahp-session"), "utf8").toString("base64url");
+		assert.equal(parseChatUri(`ahp-chat://DEFAULT/${encoded}`), "s");
+		assert.equal(parseChatUri(`ahp-chat://chat-2/${encoded}`), undefined, "a forked chat VS Code named");
+	});
 });
 
 describe("scheme store", () => {
