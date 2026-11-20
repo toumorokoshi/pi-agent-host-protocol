@@ -8,7 +8,15 @@ import {
 	type SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import { cached, cachedBy } from "../core/cached.ts";
-import { COMMANDS_TTL_MS, inEmptyDir, type PiAgent, type PiBackend, type PiEvent, type PromptInput } from "./agent.ts";
+import {
+	COMMANDS_TTL_MS,
+	inEmptyDir,
+	type PiAgent,
+	type PiBackend,
+	type PiEvent,
+	type PiQueue,
+	type PromptInput,
+} from "./agent.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 import { truncationTarget } from "./truncation.ts";
 
@@ -138,6 +146,8 @@ class EmbeddedAgent implements PiAgent {
 	async steer({ text, images }: PromptInput): Promise<void> {
 		await this.#session.steer(text, images, { source: "rpc" });
 	}
+
+	readonly clearQueue = async (): Promise<PiQueue> => this.#session.clearQueue();
 
 	abort(): Promise<void> {
 		return this.#session.abort();

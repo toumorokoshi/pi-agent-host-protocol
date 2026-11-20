@@ -1,6 +1,11 @@
 import { connect } from "node:net";
+import { type SessionInfo, SessionManager } from "@earendil-works/pi-coding-agent";
 import { type AttachRequest, BRIDGE_PROTOCOL } from "../src/bridge/protocol.ts";
+import { silentLogger } from "../src/core/logger.ts";
+import type { PiAgent, PiBackend } from "../src/pi/agent.ts";
+import { connectRpcAgent } from "../src/pi/rpc-agent.ts";
 import { JsonlChannel, type RpcChannel, type RpcRecord } from "../src/pi/rpc-channel.ts";
+import { channelPair } from "./helpers.ts";
 
 const USAGE = {
 	input: 1,
@@ -51,14 +56,41 @@ export class FakePi {
 	entries: unknown[] = [];
 	/** When set, host prompts start no run; the test emits the run's events itself. */
 	manual = false;
+	/** Steering messages pi has queued and not yet delivered, as pi's `clear_queue` returns them. */
+	steering: string[] = [];
+	/** Follow-up messages pi has queued. */
+	followUp: string[] = [];
+	/**
+	 * When set, a steer is queued as a follow-up instead, as Bolt's `bash`
+	 * input hook resends input that arrives during a foreground command.
+	 */
+	steerAsFollowUp = false;
 
 	constructor(channel: RpcChannel) {
 		this.channel = channel;
 		channel.onRecord((record) => this.#onCommand(record));
 	}
 
+	/** Sends events; a user message delivers the queued message with its text, as pi does. */
 	emit(events: Record<string, unknown>[]): void {
-		for (const event of events) this.channel.send(event);
+		for (const event of events) {
+			const message = event.message as { role?: string; content?: Array<{ text?: string }> } | undefined;
+			if (event.type === "message_start" && message?.role === "user") {
+				const text = message.content?.[0]?.text ?? "";
+				for (const queue of [this.steering, this.followUp]) {
+					const index = queue.indexOf(text);
+					if (index < 0) continue;
+					queue.splice(index, 1);
+					this.#queueUpdate();
+					break;
+				}
+			}
+			this.channel.send(event);
+		}
+	}
+
+	#queueUpdate(): void {
+		this.channel.send({ type: "queue_update", steering: [...this.steering], followUp: [...this.followUp] });
 	}
 
 	#onCommand(command: RpcRecord): void {
@@ -78,10 +110,69 @@ export class FakePi {
 				if (this.manual) break;
 				this.emit(runEvents(String(command.message), this.replies.shift() ?? "OK"));
 				break;
+			case "steer":
+				(this.steerAsFollowUp ? this.followUp : this.steering).push(String(command.message));
+				this.#queueUpdate();
+				this.channel.respond(command, {});
+				break;
+			case "clear_queue": {
+				const data = { steering: this.steering.splice(0), followUp: this.followUp.splice(0) };
+				this.#queueUpdate();
+				this.channel.respond(command, { data });
+				break;
+			}
+			case "extension_ui_response":
+				break;
 			default:
 				this.channel.respond(command, {});
 		}
 	}
+}
+
+/** A backend whose agents are `FakePi`s, so tests script every event pi sends. */
+export class FakeBackend implements PiBackend {
+	readonly mode = "rpc";
+	readonly pis: FakePi[] = [];
+	readonly #dir: string;
+	readonly #clearQueue: boolean;
+
+	/** `clearQueue` makes the agents answer `clear_queue`, as `pi --mode rpc` does. */
+	constructor(dir: string, options: { clearQueue?: boolean } = {}) {
+		this.#dir = dir;
+		this.#clearQueue = options.clearQueue ?? false;
+	}
+
+	async models() {
+		return [{ provider: "faux", id: "faux-1" }];
+	}
+
+	async globalCommands() {
+		return [];
+	}
+
+	async folderCommands() {
+		return [];
+	}
+
+	listSessions(): Promise<SessionInfo[]> {
+		return SessionManager.listAll(this.#dir);
+	}
+
+	newSessionManager(cwd: string, id: string): SessionManager {
+		return SessionManager.create(cwd, this.#dir, { id });
+	}
+
+	openSessionManager(path: string): SessionManager {
+		return SessionManager.open(path, this.#dir);
+	}
+
+	async startAgent(): Promise<PiAgent> {
+		const [host, pi] = channelPair();
+		this.pis.push(new FakePi(pi));
+		return connectRpcAgent(host, silentLogger, { clearQueue: this.#clearQueue });
+	}
+
+	async dispose(): Promise<void> {}
 }
 
 /** A fake interactive pi connected to the host's bridge socket. */

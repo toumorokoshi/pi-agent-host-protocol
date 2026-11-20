@@ -25,6 +25,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 **`info`** (default): connection lifecycle.
 
 - `pi backend`: at startup, the pi mode in use (`rpc` or `embedded`), and in `rpc` mode `idle timeout` (minutes).
+- `undelivered steering messages resumed`: a run ended with steering messages pi still holds, so a new turn opens and a run starts in which pi delivers them (`messages`). `undelivered steering messages queued`: the same when pi holds them as follow-ups (Bolt's `bash`) or not at all; they run as the next turns from the chat's queue. `undelivered steering messages dropped`: the same after a cancel, so they don't run. See [specs/steering.md](../specs/steering.md).
 - `idle session suspended`: the host stopped an idle session's `pi` process (`session`, `idleMinutes`). See [specs/idle-sessions.md](../specs/idle-sessions.md).
 - `live session attached` / `live session detached`: an interactive pi shared or let go of a session (`pid`, `session`, and for detaches the reason).
 - `client connected`: a WebSocket connection was accepted.
@@ -36,7 +37,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 
 - `connection rejected: missing or invalid token`: the URL's `?tkn=` didn't match the settings file.
 - `request failed`: a request returned an error. Includes the method, channel and error message.
-- `request before initialize`, `could not load models`, `could not save session title`, `could not attach live session`, `could not suspend idle session`, `could not save archived sessions`
+- `request before initialize`, `could not load models`, `could not save session title`, `could not attach live session`, `could not suspend idle session`, `could not save archived sessions`, `could not save review comments`
 
 **`debug`**: every interaction with a session.
 
@@ -44,11 +45,12 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 - `action accepted` / `action rejected` / `action ignored`: each action a client dispatches, such as `chat/turnStarted` or `chat/turnCancelled`. Rejections include the reason.
 - `session created`, `session loaded` (opened from a pi session file), `session ready`, `session disposed`
 - `turn started outside the host` (a run typed in a pi terminal), `live session ready`
-- `turn started` (model, prompt length, attachment count), `turn resumed` (a `chat/turnResume` after a resumable error), and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
+- `turn started` (model, prompt length, attachment count), `turn resumed` (a `chat/turnResume` after a resumable error), `turn started for queued steering` (a run in which pi delivers steering messages it still held), and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
 - `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `steering message started a turn` (also logged when a steering message arrives with no turn running), `queued message started a turn`
 - `terminal created` (shell, cwd, pid), `terminal exited` (exit code), `terminal disposed`
 - `resource watch created` (root, recursive) and `resource watch released`. Watcher failures are logged as `resource watch error` at warn.
-- In `rpc` mode: `idle session kept (background processes)` (with the `pids` pi started since it became ready, or `unknown`), `background work changed` (the `count` of background processes published for the chat; a failed refresh logs `could not refresh background work` at warn), `could not read the process table`, `pi stderr`, one line per line pi writes to stderr (tagged `session=<id>`, or `purpose=models` for the process that lists models), and `extension dialog dismissed` when a pi extension asks for input that the host cannot show.
+- `review comments resolved` (with their `count`) after a completed turn that acted on submitted review comments.
+- In `rpc` mode: `idle session kept (background processes)` (with the `pids` pi started since it became ready, or `unknown`), `background work changed` (the `count` of background processes published for the chat; a failed refresh logs `could not refresh background work` at warn), `could not read the process table`, `pi stderr`, one line per line pi writes to stderr (tagged `session=<id>`, or `purpose=models` for the process that lists models), `extension dialog dismissed` when a pi extension asks for input that the host cannot show, `extension dialog shown` and `extension dialog answered` (with the dialog `method`) for ones it can, and `extension notification outside a turn` for a `ctx.ui.notify` that no turn can show.
 
 Each line carries `client=<address>` and `clientName=…`, or `session=<id>` and `turn=<id>`, so you can follow one client or one conversation with `grep`.
 

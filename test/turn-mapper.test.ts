@@ -77,3 +77,18 @@ describe("TurnMapper activity", () => {
 		assert.deepEqual(activities(), ["Reading a.txt", "Reading b.txt", "Reading a.txt"]);
 	});
 });
+
+describe("TurnMapper notices", () => {
+	test("each notice stays its own paragraph when VS Code joins the parts", () => {
+		const actions: ChatAction[] = [];
+		const m = new TurnMapper("turn-1", (action) => actions.push(action));
+		m.notice("Run /mcp to fix.");
+		m.notice("Plan mode enabled.");
+		const text = actions
+			.flatMap((action) =>
+				action.type === "chat/responsePart" && action.part.kind === "markdown" ? [action.part.content] : [],
+			)
+			.join("");
+		assert.match(text, /Run \/mcp to fix\.\n\n+Plan mode enabled\./);
+	});
+});

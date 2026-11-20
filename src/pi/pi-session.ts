@@ -3,6 +3,8 @@ import type { SessionEntry, SessionManager, SlashCommandInfo } from "@earendil-w
 import {
 	ActionType,
 	type ChatAction,
+	type ChatInputAnswer,
+	ChatInputResponseKind,
 	ChatOriginKind,
 	type ChatState,
 	type ChatSummary,
@@ -22,8 +24,10 @@ import {
 import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
 import { fileUri, PROVIDER, pathFromFileUri } from "../core/uris.ts";
+import type { AnnotationStore } from "../host/annotation-store.ts";
 import type { ArchiveStore } from "../host/archive-store.ts";
-import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
+import type { ImageInput, PiAgent, PiBackend, PiEvent, PiQueue, PromptInput } from "./agent.ts";
+import { ACT_ON_FEEDBACK_PROMPT, isActOnFeedback, referencedComments } from "./annotations.ts";
 import { backgroundWorkActions, backgroundWorkMeta } from "./background-work.ts";
 import {
 	referencedSkills,
@@ -34,6 +38,16 @@ import {
 	userCommands,
 	withFrontmatter,
 } from "./customizations.ts";
+import {
+	CANCELLED,
+	dialogAnswer,
+	dialogRequest,
+	type NotifyLevel,
+	noticeMarkdown,
+	type PiDialog,
+	type PiDialogAnswer,
+	type PiUiHandler,
+} from "./dialogs.ts";
 import { forkKeep, forkLeaf, forkTurnError } from "./forks.ts";
 import { turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
@@ -48,6 +62,8 @@ export interface SessionHostContext {
 	readonly logger: Logger;
 	/** Archived ("done") flags, which pi's session files cannot hold. */
 	readonly archive: ArchiveStore;
+	/** Review comments (annotations), which pi's session files cannot hold either. */
+	readonly annotations: AnnotationStore;
 	/** Publishes `root/sessionSummaryChanged` for this session. */
 	summaryChanged(sessionId: string, changes: SessionSummaryChanges): void;
 	/** Called whenever a session starts or stops running a turn. */
@@ -71,8 +87,26 @@ interface ActiveTurn {
 	cancelledByClient: boolean;
 }
 
-/** What a run does: send a new user message, or continue a turn that ended in a resumable error. */
-type RunKind = { kind: "prompt"; message: Message } | { kind: "resume" };
+/** An extension dialog shown as an input request in a turn, waiting for the user. */
+interface OpenDialog {
+	readonly turn: ActiveTurn;
+	readonly dialog: PiDialog;
+	readonly resolve: (answer: PiDialogAnswer) => void;
+	readonly timer: ReturnType<typeof setTimeout> | undefined;
+}
+
+/**
+ * What a run does: send a new user message, continue a turn that ended in a
+ * resumable error, or start a run in which pi delivers the steering messages
+ * still in its queue (the first opens the turn).
+ */
+type RunKind = { kind: "prompt"; message: Message } | { kind: "resume" } | { kind: "steering" };
+
+const RUN_STARTED: Record<RunKind["kind"], string> = {
+	prompt: "turn started",
+	resume: "turn resumed",
+	steering: "turn started for queued steering",
+};
 
 /** Text of a turn that pi started without a user message (for example, an extension continuing a run). */
 const CONTINUED = "Continued in pi";
@@ -121,6 +155,8 @@ export class PiSession {
 	 * Each becomes its own turn when pi echoes it (see `#promoteSteering`).
 	 */
 	#steered: Message[] = [];
+	/** The user messages in pi's queues, from its latest `queue_update`. */
+	#piQueue: PiQueue = { steering: [], followUp: [] };
 	/** Agents whose events are observed for runs started outside the host. */
 	readonly #observed = new WeakSet<PiAgent>();
 	/** The turn whose last run ended in a resumable provider error, if any. */
@@ -138,6 +174,12 @@ export class PiSession {
 	 * first observed; before that, those read for the session's folder.
 	 */
 	#commands: Promise<readonly UserCommand[]> | undefined;
+	/** Extension dialogs open in the current host run, by pi's request id. */
+	readonly #dialogs = new Map<string, OpenDialog>();
+	readonly #ui: PiUiHandler = {
+		dialog: (dialog) => this.#openDialog(dialog),
+		notify: (message, level) => this.#notify(message, level),
+	};
 	#disposed = false;
 	#hasTurns: boolean;
 	/** When a client or pi last used the session, for stopping idle pi processes. */
@@ -179,10 +221,12 @@ export class PiSession {
 	static create(ctx: SessionHostContext, id: string, cwd: string): PiSession {
 		const now = new Date().toISOString();
 		const session = new PiSession(ctx, id, cwd, ctx.backend.newSessionManager(cwd, id), now);
-		ctx.store.addSession(id, session.#initialSessionState(UNTITLED, SessionLifecycle.Creating, SessionStatus.Idle), {
-			...session.#chatSummary(UNTITLED, SessionStatus.Idle, now),
-			turns: [],
-		});
+		ctx.store.addSession(
+			id,
+			session.#initialSessionState(UNTITLED, SessionLifecycle.Creating, SessionStatus.Idle),
+			{ ...session.#chatSummary(UNTITLED, SessionStatus.Idle, now), turns: [] },
+			ctx.annotations.annotationsOf(id),
+		);
 		return session;
 	}
 
@@ -287,10 +331,12 @@ export class PiSession {
 			return session;
 		}
 		const status = restoredStatus(ctx.archive.isArchived(id));
-		ctx.store.addSession(id, session.#initialSessionState(title, SessionLifecycle.Ready, status), {
-			...session.#chatSummary(title, status, modifiedAt),
-			turns,
-		});
+		ctx.store.addSession(
+			id,
+			session.#initialSessionState(title, SessionLifecycle.Ready, status),
+			{ ...session.#chatSummary(title, status, modifiedAt), turns },
+			ctx.annotations.annotationsOf(id),
+		);
 		return session;
 	}
 
@@ -333,6 +379,7 @@ export class PiSession {
 			modifiedAt: chat?.modifiedAt ?? this.createdAt,
 			workingDirectories: [fileUri(this.cwd)],
 			...(session?.chats ? { chats: session.chats } : {}),
+			...(session?.annotations ? { annotations: session.annotations } : {}),
 			...(chat?.activity ? { activity: chat.activity } : {}),
 			...(chat?.backgroundWork?.length ? { _meta: backgroundWorkMeta(chat.backgroundWork.length) } : {}),
 		};
@@ -396,6 +443,9 @@ export class PiSession {
 				}
 				return undefined;
 			}
+			case ActionType.ChatInputAnswerChanged:
+			case ActionType.ChatInputCompleted:
+				return this.#dialogs.has(action.requestId) ? undefined : "No open input request";
 			case ActionType.ChatTruncated:
 				// The bridge cannot run the extension command that moves pi's leaf.
 				if (this.#tuiAgent) return "Not supported while the session is open in a pi terminal";
@@ -418,9 +468,13 @@ export class PiSession {
 			case ActionType.ChatTurnResume:
 				this.#runTurn(action.turnId, { kind: "resume" });
 				break;
+			case ActionType.ChatInputCompleted:
+				this.#answerDialog(action.requestId, action.response, action.answers);
+				break;
 			case ActionType.ChatTurnCancelled:
 				if (this.#turn?.id === action.turnId) {
 					this.#turn.cancelledByClient = true;
+					this.#closeDialogs();
 					this.#ctx.logger.debug("turn cancelled by client", { session: this.id, turn: action.turnId });
 					this.#turn = undefined;
 					this.#ctx.activityChanged();
@@ -445,6 +499,15 @@ export class PiSession {
 			default:
 				break;
 		}
+	}
+
+	/** Renames this chat alone, as for a forked chat, leaving its session's title unchanged. */
+	renameChat(title: string): void {
+		this.#touch();
+		this.#saveTitle(title);
+		this.#ctx.store.setChatTitle(this.id, title);
+		this.#dispatchSession({ type: ActionType.SessionChatUpdated, chat: this.chat, changes: { title } });
+		this.#syncCatalog();
 	}
 
 	/** Side effects of an accepted client session action (already applied to state). */
@@ -618,6 +681,7 @@ export class PiSession {
 
 	async dispose(): Promise<void> {
 		this.#disposed = true;
+		this.#closeDialogs();
 		const agent = this.#agent;
 		this.#agent = undefined;
 		if (agent) {
@@ -632,8 +696,12 @@ export class PiSession {
 	/** The running agent, starting one if there is none or the last one's pi process exited. */
 	#ensureAgent(): Promise<PiAgent> {
 		if (this.#disposed) return Promise.reject(new Error("Session disposed"));
+		// A pi in a terminal shows its own dialogs, so only agents the host starts get the handler.
 		const start = () =>
-			this.#ctx.backend.startAgent(this.cwd, this.#sessionManager).then((agent) => this.#observe(agent));
+			this.#ctx.backend.startAgent(this.cwd, this.#sessionManager).then((agent) => {
+				agent.setUiHandler?.(this.#ui);
+				return this.#observe(agent);
+			});
 		const previous = this.#agent;
 		const agent = previous ? previous.then((current) => (current.closed ? start() : current)) : start();
 		this.#agent = agent;
@@ -693,8 +761,10 @@ export class PiSession {
 		let turn = first;
 		let outcome: TurnOutcome = { kind: "cancelled" };
 		let unsubscribe: (() => void) | undefined;
-		// The first user message of a prompt run is the prompt itself; later ones were steered in.
-		let promptSeen = run.kind !== "prompt";
+		// The first user message of a prompt run is the prompt itself (of a steering run, the
+		// queued steer that opened the turn); later ones were steered in.
+		let promptSeen = run.kind === "resume";
+		let comments: readonly string[] = [];
 		try {
 			if (!turn.cancelledByClient) {
 				const agent = await this.#ensureAgent();
@@ -714,7 +784,7 @@ export class PiSession {
 					this.#logEvent(turn, event);
 					turn.mapper.handle(event);
 				});
-				this.#ctx.logger.debug(run.kind === "prompt" ? "turn started" : "turn resumed", {
+				this.#ctx.logger.debug(RUN_STARTED[run.kind], {
 					session: this.id,
 					turn: turn.id,
 					model: agent.model ? `${agent.model.provider}/${agent.model.id}` : undefined,
@@ -722,8 +792,14 @@ export class PiSession {
 					attachments: run.kind === "prompt" ? run.message.attachments?.length : undefined,
 				});
 				this.#hostRun = true;
-				if (run.kind === "prompt") await agent.prompt(await this.#promptInput(run.message));
-				else await agent.resume();
+				if (run.kind === "prompt") {
+					const prompt = await this.#promptInput(run.message);
+					comments = prompt.comments;
+					await agent.prompt(prompt.input);
+				} else {
+					// Any run delivers pi's queued steering first; resuming starts one without a new message.
+					await agent.resume();
+				}
 				outcome = turn.mapper.impliedOutcome();
 			}
 		} catch (error) {
@@ -732,13 +808,15 @@ export class PiSession {
 				: { kind: "error", message: error instanceof Error ? error.message : String(error) };
 		} finally {
 			this.#hostRun = false;
-			this.#steered = [];
 			unsubscribe?.();
 		}
+		const undelivered = this.#steered.splice(0);
 		if (!promptSeen) this.#unrecorded.add(first.id);
 		this.#hasTurns = true;
+		this.#closeDialogs();
 		if (!turn.cancelledByClient) turn.mapper.finish(outcome, Date.now() - turn.startedAt);
 		if (!turn.cancelledByClient && outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;
+		if (!turn.cancelledByClient && outcome.kind === "complete") this.#resolveComments(comments);
 		this.#ctx.logger.debug("turn finished", {
 			session: this.id,
 			turn: turn.id,
@@ -750,9 +828,65 @@ export class PiSession {
 			this.#turn = undefined;
 			this.#ctx.activityChanged();
 		}
+		if (undelivered.length > 0) await this.#settleUndelivered(turn, undelivered);
 		this.#touch();
 		this.#syncSummary();
 		this.#consumePending();
+	}
+
+	/**
+	 * Steering messages a host run ended without pi delivering them: pi's loop
+	 * had already made its last check when they arrived, or the run was
+	 * aborted. pi's `abort` leaves them queued.
+	 * - After a client cancel, pi's queue is cleared so they don't surface in
+	 *   the next run, as pi's own Esc does, and they are dropped.
+	 * - If pi still holds them as steers, a new turn opens with the first, and
+	 *   a run starts in which pi delivers them along with anything extensions
+	 *   queued meanwhile (pi's queue is not cleared, since `clear_queue` would
+	 *   drop those, such as a background subagent's result).
+	 * - If pi holds them as follow-ups (Bolt's `bash` backgrounds a running
+	 *   command on new input and resends it that way), a run would answer
+	 *   before delivering them, so the queue is cleared and they go to the
+	 *   front of the chat's queue instead.
+	 * An agent that cannot clear pi's queue (a pi terminal) keeps them there, as pi would.
+	 */
+	async #settleUndelivered(turn: ActiveTurn, messages: readonly Message[]): Promise<void> {
+		const agent = await this.#agent?.catch(() => undefined);
+		if (!agent?.clearQueue) return;
+		if (turn.cancelledByClient) {
+			await agent.clearQueue().catch(() => undefined);
+			this.#ctx.logger.info("undelivered steering messages dropped", { session: this.id, messages: messages.length });
+			return;
+		}
+		if (this.#piQueue.steering.length > 0) {
+			const [first, ...rest] = messages;
+			this.#steered = rest;
+			const turnId = crypto.randomUUID();
+			this.#dispatchChat({
+				type: ActionType.ChatTurnStarted,
+				turnId,
+				startedAt: new Date().toISOString(),
+				message: first!,
+			});
+			this.#ctx.logger.info("undelivered steering messages resumed", { session: this.id, messages: messages.length });
+			this.#runTurn(turnId, { kind: "steering" });
+			return;
+		}
+		if (this.#piQueue.followUp.length > 0) await agent.clearQueue().catch(() => undefined);
+		const ids = messages.map(() => `steer-${crypto.randomUUID()}`);
+		messages.forEach((message, index) => {
+			this.#dispatchChat({
+				type: ActionType.ChatPendingMessageSet,
+				kind: PendingMessageKind.Queued,
+				id: ids[index]!,
+				message,
+			});
+		});
+		const others = (this.#ctx.store.chat(this.id)?.queuedMessages ?? [])
+			.map((queued) => queued.id)
+			.filter((id) => !ids.includes(id));
+		this.#dispatchChat({ type: ActionType.ChatQueuedMessagesReordered, order: [...ids, ...others] });
+		this.#ctx.logger.info("undelivered steering messages queued", { session: this.id, messages: messages.length });
 	}
 
 	/**
@@ -769,6 +903,7 @@ export class PiSession {
 		const running = this.#turn;
 		if (running) {
 			running.cancelledByClient = true;
+			this.#closeDialogs();
 			this.#turn = undefined;
 			this.#ctx.activityChanged();
 			void this.#agent?.then((agent) => agent.abort()).catch(() => {});
@@ -796,6 +931,7 @@ export class PiSession {
 		const sent = this.#steered.shift();
 		const message: Message = sent ?? { text, origin: { kind: MessageKind.User } };
 		this.#hasTurns = true;
+		this.#closeDialogs();
 		previous.mapper.finish({ kind: "complete" }, Date.now() - previous.startedAt);
 		const turnId = crypto.randomUUID();
 		const mapper = new TurnMapper(turnId, (action) => {
@@ -809,20 +945,127 @@ export class PiSession {
 		return turn;
 	}
 
+	/**
+	 * Shows an extension dialog as an input request in the running host
+	 * turn. Clients add input requests only to an active turn, so outside
+	 * one (and while a client cancels) the dialog is left to be cancelled.
+	 * pi drops a dialog when its timeout passes, so the request is withdrawn
+	 * then too. See specs/extension-dialogs.md.
+	 */
+	#openDialog(dialog: PiDialog): Promise<PiDialogAnswer> | undefined {
+		const turn = this.#turn;
+		if (!this.#hostRun || !turn || turn.cancelledByClient || this.#dialogs.has(dialog.id)) return undefined;
+		return new Promise((resolve) => {
+			const timer = dialog.timeout ? setTimeout(() => this.#closeDialog(dialog.id), dialog.timeout) : undefined;
+			this.#dialogs.set(dialog.id, { turn, dialog, resolve, timer });
+			this.#ctx.logger.debug("extension dialog shown", { session: this.id, turn: turn.id, method: dialog.method });
+			this.#dispatchChat({ type: ActionType.ChatInputRequested, request: dialogRequest(dialog) });
+			this.#syncSummary();
+		});
+	}
+
+	/** Answers pi from the request the client completed, with its final answers. */
+	#answerDialog(
+		requestId: string,
+		response: ChatInputResponseKind,
+		answers: Readonly<Record<string, ChatInputAnswer>> | undefined,
+	): void {
+		const open = this.#dialogs.get(requestId);
+		if (!open) return;
+		const part = this.#ctx.store
+			.chat(this.id)
+			?.activeTurn?.responseParts.find(
+				(candidate) => candidate.kind === ResponsePartKind.InputRequest && candidate.request.id === requestId,
+			);
+		const final = part?.kind === ResponsePartKind.InputRequest ? part.request.answers : answers;
+		this.#dialogs.delete(requestId);
+		clearTimeout(open.timer);
+		open.resolve(dialogAnswer(open.dialog, response, final));
+		this.#ctx.logger.debug("extension dialog answered", { session: this.id, method: open.dialog.method, response });
+		this.#syncSummary();
+	}
+
+	/**
+	 * Cancels a dialog the user has not answered: pi gets `cancelled`, and
+	 * the request is marked cancelled while its turn is still the client's
+	 * active turn.
+	 */
+	#closeDialog(requestId: string): void {
+		const open = this.#dialogs.get(requestId);
+		if (!open) return;
+		this.#dialogs.delete(requestId);
+		clearTimeout(open.timer);
+		if (this.#turn === open.turn && !open.turn.cancelledByClient) {
+			this.#dispatchChat({ type: ActionType.ChatInputCompleted, requestId, response: ChatInputResponseKind.Cancel });
+			this.#syncSummary();
+		}
+		open.resolve(CANCELLED);
+	}
+
+	/** Cancels every open dialog, before the turn they belong to ends. */
+	#closeDialogs(): void {
+		for (const requestId of [...this.#dialogs.keys()]) this.#closeDialog(requestId);
+	}
+
+	/** Adds an extension's notification to the running host turn; other notifications are only logged. */
+	#notify(message: string, level: NotifyLevel): void {
+		const turn = this.#turn;
+		if (this.#hostRun && turn && !turn.cancelledByClient) {
+			turn.mapper.notice(noticeMarkdown(message, level));
+			return;
+		}
+		this.#ctx.logger.debug("extension notification outside a turn", { session: this.id, level, message });
+	}
+
 	/** Watches an agent for runs started outside the host. Returns the agent. */
 	#observe(agent: PiAgent): PiAgent {
 		if (!this.#observed.has(agent)) {
 			this.#observed.add(agent);
-			agent.subscribe((event) => this.#onAgentEvent(event));
+			agent.subscribe((event) => {
+				if (event.type === "queue_update") this.#piQueue = { steering: event.steering, followUp: event.followUp };
+				this.#onAgentEvent(event);
+			});
 			this.#loadCommands(agent.commands());
 		}
 		return agent;
 	}
 
 	/** Prompt input for a message, with the skills its completion chips reference later in the text. */
-	async #promptInput(message: Message): Promise<PromptInput> {
+	/** pi's prompt for a message, and the ids of the review comments it asks pi to act on. */
+	async #promptInput(message: Message): Promise<{ input: PromptInput; comments: readonly string[] }> {
 		const commands = await (this.#commands ?? Promise.resolve([])).catch(() => []);
-		return promptInput(message, await skillBlocks(referencedSkills(message, commands)));
+		const store = this.#ctx.store;
+		const comments = referencedComments(
+			message,
+			store.annotationsResource(this.sessionId),
+			store.annotations(this.sessionId)?.annotations ?? [],
+			this.cwd,
+		);
+		const text = isActOnFeedback(message) ? ACT_ON_FEEDBACK_PROMPT : message.text;
+		const context = [
+			...(comments.text ? [comments.text] : []),
+			...(await skillBlocks(referencedSkills(message, commands))),
+		];
+		return { input: promptInput({ ...message, text }, context), comments: comments.ids };
+	}
+
+	/**
+	 * Marks the review comments a completed turn acted on as resolved, which
+	 * is how VS Code learns that the agent handled them (pi has no tool to
+	 * resolve them itself).
+	 */
+	#resolveComments(ids: readonly string[]): void {
+		const store = this.#ctx.store;
+		const channel = store.annotationsResource(this.sessionId);
+		const open = new Set(
+			(store.annotations(this.sessionId)?.annotations ?? []).filter((a) => !a.resolved).map((a) => a.id),
+		);
+		const resolved = ids.filter((id) => open.has(id));
+		for (const annotationId of resolved) {
+			store.dispatch(channel, { type: ActionType.AnnotationsUpdated, annotationId, resolved: true });
+		}
+		if (resolved.length > 0)
+			this.#ctx.logger.debug("review comments resolved", { session: this.id, count: resolved.length });
 	}
 
 	/**
@@ -967,7 +1210,7 @@ export class PiSession {
 			this.#ctx.logger.debug("steering message sent", { session: this.id, turn: this.#turn.id, message: id });
 			// In a run the TUI started, pi's echo of the message already opens a turn (`#onAgentEvent`).
 			if (this.#turn !== this.#externalRun) this.#steered.push(message);
-			void this.#agent?.then(async (agent) => agent.steer(await this.#promptInput(message))).catch(() => {});
+			void this.#agent?.then(async (agent) => agent.steer((await this.#promptInput(message)).input)).catch(() => {});
 		}
 		const next = chat.queuedMessages?.[0];
 		if (next && !this.#turn && !chat.activeTurn) this.#startPendingTurn(PendingMessageKind.Queued, next);

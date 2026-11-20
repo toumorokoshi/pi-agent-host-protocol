@@ -8,6 +8,7 @@ import type {
 	SessionManager,
 	SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
+import type { PiUiHandler } from "./dialogs.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
 
@@ -42,6 +43,12 @@ export interface PromptInput {
 	images: ImageInput[];
 }
 
+/** Messages waiting in pi's queues, as the text pi was given. */
+export interface PiQueue {
+	steering: readonly string[];
+	followUp: readonly string[];
+}
+
 /**
  * One running pi agent bound to one session file. `PiSession` only talks to
  * this interface, so both backends share all protocol logic above it.
@@ -66,6 +73,13 @@ export interface PiAgent {
 	 */
 	truncate(keep: number): Promise<void>;
 	steer(input: PromptInput): Promise<void>;
+	/**
+	 * Empties pi's steering and follow-up queues and resolves with the
+	 * messages it removed. pi's `abort` leaves them queued, to be delivered
+	 * in the next run. Unset on agents that cannot (a pi terminal through
+	 * the bridge, whose extension API has no such call).
+	 */
+	readonly clearQueue?: () => Promise<PiQueue>;
 	abort(): Promise<void>;
 	/** Selects a model by provider and id. Rejects if pi does not know it. */
 	setModel(provider: string, id: string): Promise<void>;
@@ -73,6 +87,12 @@ export interface PiAgent {
 	setSessionName(name: string): Promise<void>;
 	/** pi's slash commands: extension commands, prompt templates and skills (`skill:<name>`). */
 	commands(): Promise<readonly SlashCommandInfo[]>;
+	/**
+	 * Routes the dialogs and notifications pi's extensions open to `handler`.
+	 * Without one, dialogs are cancelled and notifications dropped. Only
+	 * agents over pi's RPC protocol support it.
+	 */
+	setUiHandler?(handler: PiUiHandler | undefined): void;
 	/**
 	 * Set only on agents the host may stop when idle (its own `pi --mode rpc`
 	 * children). Resolves with the processes pi started after it became

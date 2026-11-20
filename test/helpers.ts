@@ -7,6 +7,9 @@ import { type FauxResponseStep, fauxAssistantMessage, fauxProvider } from "@eare
 import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
 	type ActionEnvelope,
+	type AnnotationsAction,
+	type AnnotationsState,
+	annotationsReducer,
 	type ChatAction,
 	type ChatState,
 	chatReducer,
@@ -21,6 +24,7 @@ import {
 import WebSocket from "ws";
 import { type Logger, silentLogger } from "../src/core/logger.ts";
 import { AgentHost } from "../src/host/agent-host.ts";
+import { fileAnnotationStore } from "../src/host/annotation-store.ts";
 import { fileArchiveStore } from "../src/host/archive-store.ts";
 import { BridgeServer } from "../src/host/bridges.ts";
 import { fileForkStore } from "../src/host/fork-store.ts";
@@ -78,13 +82,18 @@ export async function startHost(
 		bridge?: boolean;
 		idleTimeoutMs?: number;
 		now?: () => number;
+		/** Extra pi extensions the RPC child loads (rpc mode only). */
+		extensions?: readonly string[];
 	} = {},
 ): Promise<TestHost> {
 	const mode = options.mode ?? "rpc";
 	const dir = options.dir ?? (await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-test-")));
 	const cwd = join(dir, "workspace");
 	await mkdir(cwd, { recursive: true });
-	const started = mode === "rpc" ? await startRpcBackend(dir, cwd, options.logger) : await startEmbeddedBackend(dir);
+	const started =
+		mode === "rpc"
+			? await startRpcBackend(dir, cwd, options.logger, options.extensions ?? [])
+			: await startEmbeddedBackend(dir);
 	const host = new AgentHost({
 		backend: started.backend,
 		defaultDirectory: cwd,
@@ -95,6 +104,7 @@ export async function startHost(
 		archive: await fileArchiveStore(join(dir, "archived-sessions.json")),
 		forks: await fileForkStore(join(dir, "forked-chats.json")),
 		schemes: await fileSchemeStore(join(dir, "session-schemes.json")),
+		annotations: await fileAnnotationStore(join(dir, "annotations.json")),
 	});
 	await host.refreshAgents();
 	const listener: Listener = await listen(host, { host: "127.0.0.1", port: 0, token: options.token });
@@ -149,7 +159,12 @@ async function startEmbeddedBackend(dir: string): Promise<StartedBackend> {
  * Runs pi's real CLI in RPC mode. The child loads `fixtures/faux-provider.ts`,
  * which asks this process for each response, so factories still run here.
  */
-async function startRpcBackend(dir: string, cwd: string, logger: Logger | undefined): Promise<StartedBackend> {
+async function startRpcBackend(
+	dir: string,
+	cwd: string,
+	logger: Logger | undefined,
+	extensions: readonly string[],
+): Promise<StartedBackend> {
 	const agentDir = join(dir, "agent");
 	await mkdir(agentDir, { recursive: true });
 	await writeFile(join(agentDir, "auth.json"), JSON.stringify({ faux: { type: "api_key", key: "test-key" } }));
@@ -179,7 +194,15 @@ async function startRpcBackend(dir: string, cwd: string, logger: Logger | undefi
 		pi: PI_CLI,
 		agentDir,
 		sessionDir: join(dir, "sessions"),
-		args: ["-e", FAUX_EXTENSION, "--provider", "faux", "--model", "faux-1"],
+		args: [
+			"-e",
+			FAUX_EXTENSION,
+			...extensions.flatMap((extension) => ["-e", extension]),
+			"--provider",
+			"faux",
+			"--model",
+			"faux-1",
+		],
 		env: { PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_AGENT_HOST_PROTOCOL_FAUX_URL: `http://127.0.0.1:${port}/` },
 		cwd,
 		logger,
@@ -212,6 +235,7 @@ export class TestClient {
 	root: RootState | undefined;
 	readonly sessions = new Map<string, SessionState>();
 	readonly chats = new Map<string, ChatState>();
+	readonly annotations = new Map<string, AnnotationsState>();
 	#nextId = 1;
 	#clientSeq = 0;
 	readonly clientId = crypto.randomUUID();
@@ -291,7 +315,9 @@ export class TestClient {
 	#applySnapshot(snapshot: Snapshot): void {
 		if (snapshot.resource === "ahp-root://") this.root = snapshot.state as RootState;
 		else if (snapshot.resource.startsWith("ahp-chat:")) this.chats.set(snapshot.resource, snapshot.state as ChatState);
-		else this.sessions.set(snapshot.resource, snapshot.state as SessionState);
+		else if (snapshot.resource.endsWith("/annotations")) {
+			this.annotations.set(snapshot.resource, snapshot.state as AnnotationsState);
+		} else this.sessions.set(snapshot.resource, snapshot.state as SessionState);
 	}
 
 	#apply(envelope: ActionEnvelope): void {
@@ -301,6 +327,8 @@ export class TestClient {
 			this.root = rootReducer(this.root, action as RootAction);
 		} else if (this.chats.has(channel)) {
 			this.chats.set(channel, chatReducer(this.chats.get(channel)!, action as ChatAction));
+		} else if (this.annotations.has(channel)) {
+			this.annotations.set(channel, annotationsReducer(this.annotations.get(channel)!, action as AnnotationsAction));
 		} else if (this.sessions.has(channel)) {
 			this.sessions.set(channel, sessionReducer(this.sessions.get(channel)!, action as SessionAction));
 		}
@@ -374,6 +402,15 @@ export function startTurn(client: TestClient, chat: string, text: string): strin
 		message: { text, origin: { kind: "user" } },
 	});
 	return turnId;
+}
+
+/** Polls `predicate` until it holds, or throws after `timeoutMs`. */
+export async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() > deadline) throw new Error("Timed out");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
 }
 
 /** Two connected in-memory channels, standing in for a socket between the host and a bridge. */

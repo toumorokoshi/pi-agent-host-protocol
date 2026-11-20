@@ -70,6 +70,7 @@ export class TurnMapper {
 	readonly #usage = { input: 0, output: 0, cacheRead: 0, seen: false, model: undefined as string | undefined };
 	#lastError: string | undefined;
 	#aborted = false;
+	#notices = 0;
 	#activity: string | undefined;
 	/** Activity text of tool calls that have not completed yet, in start order. */
 	readonly #runningTools = new Map<string, string>();
@@ -179,6 +180,21 @@ export class TurnMapper {
 				});
 				break;
 		}
+	}
+
+	/**
+	 * Adds a markdown part outside pi's messages, such as an extension's
+	 * notification. VS Code joins adjacent markdown parts without a separator,
+	 * so the notice is padded to stay its own paragraph.
+	 */
+	notice(markdown: string): void {
+		this.#notices++;
+		const attempt = this.#attempt === 0 ? "" : `r${this.#attempt}.`;
+		this.#ensurePart(
+			ResponsePartKind.Markdown,
+			`${this.turnId}.${attempt}notice.${this.#notices}`,
+			`\n\n${markdown}\n\n`,
+		);
 	}
 
 	/** The outcome implied by the events seen so far, for a run that returned normally. */

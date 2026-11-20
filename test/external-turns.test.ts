@@ -3,57 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { type SessionInfo, SessionManager } from "@earendil-works/pi-coding-agent";
-import { silentLogger } from "../src/core/logger.ts";
 import { AgentHost } from "../src/host/agent-host.ts";
-import type { PiAgent, PiBackend } from "../src/pi/agent.ts";
-import { connectRpcAgent } from "../src/pi/rpc-agent.ts";
 import { type Listener, listen } from "../src/transport/websocket.ts";
-import { FakePi, runEvents } from "./fake-pi.ts";
-import { channelPair, newSession, startTurn, TestClient } from "./helpers.ts";
-
-/** A backend whose agents are `FakePi`s, so tests can play runs that the host did not start. */
-class FakeBackend implements PiBackend {
-	readonly mode = "rpc";
-	readonly pis: FakePi[] = [];
-	readonly #dir: string;
-
-	constructor(dir: string) {
-		this.#dir = dir;
-	}
-
-	async models() {
-		return [{ provider: "faux", id: "faux-1" }];
-	}
-
-	async globalCommands() {
-		return [];
-	}
-
-	async folderCommands() {
-		return [];
-	}
-
-	listSessions(): Promise<SessionInfo[]> {
-		return SessionManager.listAll(this.#dir);
-	}
-
-	newSessionManager(cwd: string, id: string): SessionManager {
-		return SessionManager.create(cwd, this.#dir, { id });
-	}
-
-	openSessionManager(path: string): SessionManager {
-		return SessionManager.open(path, this.#dir);
-	}
-
-	async startAgent(): Promise<PiAgent> {
-		const [host, pi] = channelPair();
-		this.pis.push(new FakePi(pi));
-		return connectRpcAgent(host, silentLogger);
-	}
-
-	async dispose(): Promise<void> {}
-}
+import { FakeBackend, runEvents } from "./fake-pi.ts";
+import { newSession, startTurn, TestClient, waitUntil } from "./helpers.ts";
 
 describe("turns started outside the host", () => {
 	let dir: string;
@@ -262,11 +215,3 @@ describe("turns started outside the host", () => {
 		assert.equal(state.activeTurn, undefined);
 	});
 });
-
-async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (!predicate()) {
-		if (Date.now() > deadline) throw new Error("Timed out");
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-}
