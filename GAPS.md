@@ -20,6 +20,7 @@ Known issues and features not yet implemented.
 - **Not implemented:** changesets, MCP and automations.
 - **Activity text is English only and based on tool names:** custom tools from extensions show `Running <tool>`. Retries and compaction have no activity text of their own.
 - **Read-only file access:** `resourceWrite` and the other write operations are refused.
+- **Moving a session's working directory (`session/workingDirectoryReplaced`):** not supported while a turn is in progress or while a live pi TUI drives the session through the bridge; generic `session/workingDirectorySet` and `session/workingDirectoryRemoved` are rejected because pi has a single `cwd`. See [specs/working-directory-move.md](specs/working-directory-move.md).
 
 ## Archived sessions
 

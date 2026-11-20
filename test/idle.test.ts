@@ -118,6 +118,10 @@ class FakeBackend implements PiBackend {
 		return SessionManager.open(path, this.#dir);
 	}
 
+	async moveSessionManager(manager: SessionManager, newCwd: string): Promise<SessionManager> {
+		return SessionManager.create(newCwd, this.#dir, { id: manager.getSessionId() });
+	}
+
 	async startAgent(): Promise<PiAgent> {
 		const [host, pi] = channelPair();
 		this.pis.push(new FakePi(pi));

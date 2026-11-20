@@ -10,6 +10,7 @@ import {
 import { cached, cachedBy } from "../core/cached.ts";
 import { COMMANDS_TTL_MS, inEmptyDir, type PiAgent, type PiBackend, type PiEvent, type PromptInput } from "./agent.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
+import { moveSessionManager as relocateSessionManager } from "./session-move.ts";
 import { truncationTarget } from "./truncation.ts";
 
 export interface EmbeddedBackendOptions {
@@ -58,6 +59,13 @@ export class EmbeddedBackend implements PiBackend {
 
 	openSessionManager(path: string): SessionManager {
 		return SessionManager.open(path, this.#options.sessionDir);
+	}
+
+	moveSessionManager(manager: SessionManager, newCwd: string): Promise<SessionManager> {
+		return relocateSessionManager(manager, newCwd, {
+			agentDir: this.#options.agentDir,
+			sessionDir: this.#options.sessionDir,
+		});
 	}
 
 	async startAgent(cwd: string, sessionManager: SessionManager): Promise<PiAgent> {

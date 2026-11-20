@@ -18,6 +18,7 @@ import {
 	ReconnectResultType,
 	type SessionChatSummary,
 	type SessionSummary,
+	type SessionWorkingDirectoryReplacedAction,
 	type Snapshot,
 	type StateAction,
 	type TerminalClaim,
@@ -108,6 +109,7 @@ const ACCEPTED_SESSION_ACTIONS = new Set<string>([
 	ActionType.SessionActiveClientSet,
 	ActionType.SessionActiveClientRemoved,
 	ActionType.SessionConfigChanged,
+	ActionType.SessionWorkingDirectoryReplaced,
 ]);
 
 const UNSUPPORTED_METHODS = new Set([
@@ -184,7 +186,10 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 						displayName: "Pi",
 						description: "The pi coding agent",
 						models: [],
-						capabilities: { multipleChats: { fork: true } },
+						capabilities: {
+							multipleChats: { fork: true },
+							multipleWorkingDirectories: { immutablePrimary: true, primaryReplacement: true },
+						},
 					},
 				],
 				activeSessions: 0,
@@ -840,6 +845,13 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				const session = this.#sessions.get(ref.sessionId);
 				if (!session) return { kind: "ignored" };
 				if (!ACCEPTED_SESSION_ACTIONS.has(action.type)) return unsupported;
+				if (action.type === ActionType.SessionWorkingDirectoryReplaced) {
+					const reason = await this.#moveSessionWorkingDirectory(
+						session,
+						action as SessionWorkingDirectoryReplacedAction,
+					);
+					if (reason) return { kind: "rejected", reason };
+				}
 				this.store.dispatch(this.store.sessionResource(ref.sessionId), action, origin);
 				session.onSessionAction(action);
 				return { kind: "accepted" };
@@ -855,6 +867,56 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			default:
 				return { kind: "ignored" };
 		}
+	}
+
+	#sessionForks(sessionId: string): PiSession[] {
+		return [...this.#forkedChats.values()].filter((fork) => fork.sessionId === sessionId);
+	}
+
+	/**
+	 * Validates and applies `session/workingDirectoryReplaced` before the
+	 * action is broadcast: stops any started pi agents, updates/relocates the
+	 * session files (including forks), and clears the catalog cache.
+	 */
+	async #moveSessionWorkingDirectory(
+		session: PiSession,
+		action: SessionWorkingDirectoryReplacedAction,
+	): Promise<string | undefined> {
+		const current = this.store.session(session.id)?.workingDirectories;
+		if (!current?.includes(action.directory)) {
+			return `Working directory is not in session: ${action.directory}`;
+		}
+		if (typeof action.replacement !== "string" || action.replacement.length === 0) {
+			return "Replacement working directory must be a non-empty URI";
+		}
+		const newCwd = pathFromFileUri(action.replacement);
+		if (
+			!newCwd ||
+			!(await stat(newCwd).then(
+				(info) => info.isDirectory(),
+				() => false,
+			))
+		) {
+			return `Working directory is not a local directory: ${action.replacement}`;
+		}
+		const chats = [session, ...this.#sessionForks(session.id)];
+		for (const chat of chats) {
+			if (chat.isTuiAttached) return "Not supported while the session is open in a pi terminal";
+			if (chat.isRunning) return "Cannot move working directory while a turn is in progress";
+		}
+		const previousCwd = session.cwd;
+		try {
+			await Promise.all(chats.map((chat) => chat.moveWorkingDirectory(newCwd)));
+		} catch (error) {
+			return `Could not move working directory: ${error instanceof Error ? error.message : String(error)}`;
+		}
+		this.#catalog = undefined;
+		this.logger.debug("session working directory moved", {
+			session: session.id,
+			from: previousCwd,
+			to: newCwd,
+		});
+		return undefined;
 	}
 
 	#notifyRoot(

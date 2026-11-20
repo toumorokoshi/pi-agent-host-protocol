@@ -9,6 +9,7 @@ import type { PiModel } from "./models.ts";
 import { type BackgroundProcess, childrenOf, newChildren, type ProcessTable, readProcessTable } from "./processes.ts";
 import { connectRpcAgent, type RpcAgent } from "./rpc-agent.ts";
 import { type RpcProcess, spawnRpcProcess } from "./rpc-process.ts";
+import { moveSessionManager as relocateSessionManager } from "./session-move.ts";
 
 /** The pi extension every RPC child loads, so `chat/turnResume` works (see `extensions/ahp-resume.ts`). */
 export const RESUME_EXTENSION = (() => {
@@ -68,6 +69,13 @@ export class RpcBackend implements PiBackend {
 
 	openSessionManager(path: string): SessionManager {
 		return SessionManager.open(path, this.#options.sessionDir);
+	}
+
+	moveSessionManager(manager: SessionManager, newCwd: string): Promise<SessionManager> {
+		return relocateSessionManager(manager, newCwd, {
+			agentDir: this.#options.agentDir,
+			sessionDir: this.#options.sessionDir,
+		});
 	}
 
 	async startAgent(cwd: string, sessionManager: SessionManager): Promise<PiAgent> {

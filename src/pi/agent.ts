@@ -95,6 +95,8 @@ export interface PiBackend {
 	newSessionManager(cwd: string, id: string): SessionManager;
 	/** A saved session file, for reading its history. */
 	openSessionManager(path: string): SessionManager;
+	/** Moves a session manager to a new working directory, relocating its file if needed. */
+	moveSessionManager(manager: SessionManager, newCwd: string): Promise<SessionManager>;
 	/** Starts an agent on a session created or opened by this backend. */
 	startAgent(cwd: string, sessionManager: SessionManager): Promise<PiAgent>;
 	/**

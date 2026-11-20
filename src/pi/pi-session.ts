@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import type { SessionEntry, SessionManager, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import {
 	ActionType,
@@ -100,7 +101,7 @@ export type ChatBinding =
 export class PiSession {
 	/** The pi session id; for a default chat, also the AHP session's id. */
 	readonly id: string;
-	readonly cwd: string;
+	#cwd: string;
 	readonly createdAt: string;
 	readonly #ctx: SessionHostContext;
 	readonly #binding: ChatBinding;
@@ -153,12 +154,20 @@ export class PiSession {
 	) {
 		this.#ctx = ctx;
 		this.id = id;
-		this.cwd = cwd;
+		this.#cwd = cwd;
 		this.#sessionManager = sessionManager;
 		this.createdAt = createdAt;
 		this.#binding = binding;
 		this.#hasTurns = false;
 		this.#lastActivity = ctx.now();
+	}
+
+	get cwd(): string {
+		return this.#cwd;
+	}
+
+	get isTuiAttached(): boolean {
+		return this.#tuiAgent !== undefined;
 	}
 
 	/** Id of the AHP session the chat belongs to. */
@@ -331,7 +340,7 @@ export class PiSession {
 			status: chat?.status ?? SessionStatus.Idle,
 			createdAt: this.createdAt,
 			modifiedAt: chat?.modifiedAt ?? this.createdAt,
-			workingDirectories: [fileUri(this.cwd)],
+			workingDirectories: this.#ctx.store.session(this.id)?.workingDirectories ?? [fileUri(this.cwd)],
 			...(session?.chats ? { chats: session.chats } : {}),
 			...(chat?.activity ? { activity: chat.activity } : {}),
 			...(chat?.backgroundWork?.length ? { _meta: backgroundWorkMeta(chat.backgroundWork.length) } : {}),
@@ -472,9 +481,40 @@ export class PiSession {
 				this.#ctx.archive.setArchived(this.id, action.isArchived);
 				this.#syncSummary();
 				break;
+			case ActionType.SessionWorkingDirectoryReplaced:
+				this.#ctx.summaryChanged(this.id, {
+					workingDirectories: this.#ctx.store.session(this.id)?.workingDirectories ?? [fileUri(this.cwd)],
+				});
+				break;
 			default:
 				break;
 		}
+	}
+
+	/**
+	 * Moves this chat's working directory to `newCwd`, stopping any started
+	 * pi agent and relocating/updating its session file before the state
+	 * change is broadcast.
+	 */
+	async moveWorkingDirectory(newCwd: string): Promise<void> {
+		this.#touch();
+		const resolved = resolve(newCwd);
+		if (resolved === resolve(this.#cwd)) return;
+		await this.#lastRun.catch(() => {});
+		const agent = this.#agent;
+		this.#agent = undefined;
+		if (agent) {
+			try {
+				await (await agent).dispose();
+			} catch {
+				// Creation failed; nothing to dispose.
+			}
+		}
+		const file = await this.#sessionFile();
+		const currentManager = file ? this.#ctx.backend.openSessionManager(file) : this.#sessionManager;
+		this.#sessionManager = await this.#ctx.backend.moveSessionManager(currentManager, resolved);
+		this.#cwd = resolved;
+		this.#loadCommands(this.#ctx.backend.folderCommands(resolved));
 	}
 
 	/**
