@@ -1,0 +1,43 @@
+{
+	"runs": [
+		{
+			"agent": "workflow",
+			"status": "completed",
+			"workflowReceiptPath": "/tmp/pi-subagents-uid-1001/async-subagent-runs/1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5/workflow-receipt.json",
+			"asyncDir": "/tmp/pi-subagents-uid-1001/async-subagent-runs/1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+			"durationMs": 26693,
+			"runId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+			"workflowRunId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+			"childRuns": [
+				{
+					"runId": "c58fb5c0-2926-4d15-bae0-f2cdc2b58c80",
+					"workflowKey": "task-1",
+					"agent": "delegate",
+					"status": "completed"
+				},
+				{
+					"runId": "478a2a04-bdc2-4ebc-a553-2dadb004b924",
+					"workflowKey": "task-2",
+					"agent": "delegate",
+					"status": "completed"
+				}
+			],
+			"childOutputs": [
+				{
+					"workflowKey": "task-1",
+					"runId": "c58fb5c0-2926-4d15-bae0-f2cdc2b58c80",
+					"agent": "delegate",
+					"status": "completed",
+					"outputArtifactPath": "/SCRATCH/fx-live/sessions/subagent-artifacts/c58fb5c0-2926-4d15-bae0-f2cdc2b58c80_delegate_output.md"
+				},
+				{
+					"workflowKey": "task-2",
+					"runId": "478a2a04-bdc2-4ebc-a553-2dadb004b924",
+					"agent": "delegate",
+					"status": "completed",
+					"outputArtifactPath": "/SCRATCH/fx-live/sessions/subagent-artifacts/478a2a04-bdc2-4ebc-a553-2dadb004b924_delegate_output.md"
+				}
+			]
+		}
+	]
+}

@@ -44,13 +44,32 @@ export function sessionSchemeOf(uri: string): SessionScheme | undefined {
 }
 const CANONICAL_CHAT_URI = /^ahp-chat:\/([^/?#]+)$/i;
 // Only the `default` authority names a session's default chat. VS Code
-// names other chats `ahp-chat://<chatId>/<base64url(sessionUri)>`, which
-// only the state store's fork records resolve.
+// names other chats `ahp-chat://<chatId>/<base64url(sessionUri)>`: the state
+// store's fork records resolve forked chats, and `subagentChatSession` reads
+// the session of a subagent chat.
 const DERIVED_CHAT_URI = /^ahp-chat:\/\/default\/([^/?#]+)$/i;
 
 /** Returns the session id addressed by a session URI, or `undefined`. */
 export function parseSessionUri(uri: string): string | undefined {
 	return SESSION_URI.exec(uri)?.[2];
+}
+
+/**
+ * A subagent chat's URI: the shape VS Code gives chats of a session
+ * (`ahp-chat://<chat id>/<base64url(session URI)>`), so the owning session
+ * can be read back from it. `chatId` keeps to lower-case letters, digits and
+ * hyphens (see `subagentChatId`), since it is the URI's authority.
+ */
+export function subagentChatUri(sessionResource: string, chatId: string): string {
+	return `ahp-chat://${chatId}/${Buffer.from(sessionResource, "utf8").toString("base64url")}`;
+}
+
+const SUBAGENT_CHAT_URI = /^ahp-chat:\/\/subagent-[a-z0-9-]+\/([A-Za-z0-9_-]+)$/;
+
+/** The session URI a subagent chat's URI belongs to, or undefined if `uri` is not one. */
+export function subagentChatSession(uri: string): string | undefined {
+	const encoded = SUBAGENT_CHAT_URI.exec(uri)?.[1];
+	return encoded ? Buffer.from(encoded, "base64url").toString("utf8") : undefined;
 }
 
 /** Returns the id of the session owning a chat URI, or `undefined`. */
@@ -65,7 +84,11 @@ export function parseChatUri(uri: string): string | undefined {
 
 /**
  * A chat of a session. `chatId` is the pi session backing it: the session's
- * own id for its default chat, another pi session's id for a forked chat.
+ * own id for its default chat, another pi session's id for a forked chat. A
+ * subagent chat has no pi session and no `PiSession`: its `chatId` is the
+ * synthetic id `subagentChatId` makes, kept in the same store maps, so
+ * `AgentHost` asks each `PiSession` whether it owns a chat that no
+ * `PiSession` answers to (`ownsSubagentChat`).
  */
 export type ChatRef = { kind: "chat"; sessionId: string; chatId: string };
 

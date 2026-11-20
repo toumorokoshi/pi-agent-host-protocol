@@ -103,7 +103,10 @@ export class StateStore {
 		return this.#sessions.get(id);
 	}
 
-	/** The chat backed by the pi session `chatId` (for a default chat, the session's id). */
+	/**
+	 * The chat with id `chatId`: the pi session backing it (for a default
+	 * chat, the session's id), or a subagent chat's synthetic id (see `ChatRef`).
+	 */
 	chat(chatId: string): ChatState | undefined {
 		return this.#chats.get(chatId);
 	}
@@ -133,8 +136,9 @@ export class StateStore {
 	}
 
 	/**
-	 * Registers a forked chat at its client-chosen URI without emitting
-	 * actions; the owner announces it with `session/chatAdded`.
+	 * Registers a forked chat, or a subagent chat (no pi session behind it),
+	 * at its URI without emitting actions; the owner announces it with
+	 * `session/chatAdded`.
 	 */
 	addForkedChat(ref: ChatRef, uri: string, chat: ChatState): void {
 		this.#chats.set(ref.chatId, chat);

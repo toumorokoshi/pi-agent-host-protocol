@@ -1,0 +1,14 @@
+{
+	"args": {
+		"agent": "delegate",
+		"task": "Run `sleep 30` using the bash tool (set a timeout of at least 60 seconds). When it finishes, reply with exactly: done",
+		"async": true
+	},
+	"details": {
+		"mode": "single",
+		"runId": "a44d414e-e78e-4da5-8098-d2ae7a3fe1e1",
+		"asyncId": "a44d414e-e78e-4da5-8098-d2ae7a3fe1e1",
+		"asyncDir": "/tmp/pi-subagents-uid-1001/async-subagent-runs/a44d414e-e78e-4da5-8098-d2ae7a3fe1e1",
+		"results": []
+	}
+}

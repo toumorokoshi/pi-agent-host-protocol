@@ -140,7 +140,7 @@ async function main(): Promise<void> {
 		schemes,
 		annotations,
 		idleTimeoutMs,
-		backgroundWorkIntervalMs: piMode === "rpc" ? BACKGROUND_WORK_INTERVAL_MS : 0,
+		backgroundWorkIntervalMs: BACKGROUND_WORK_INTERVAL_MS,
 		defaultDirectory: values.cwd ?? process.cwd(),
 		serverVersion: packageVersion(),
 		logger,

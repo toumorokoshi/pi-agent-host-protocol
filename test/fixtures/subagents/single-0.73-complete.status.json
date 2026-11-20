@@ -1,0 +1,26 @@
+{
+	"runId": "593ba8a8-6fce-466f-9fb7-f445dec1e606",
+	"sessionId": "/SCRATCH/fx-installed/sessions/2026-11-20T08-42-27-302Z_01a1f81f-0e66-77fb-81a9-6ff5c878d486.jsonl",
+	"mode": "single",
+	"state": "complete",
+	"startedAt": 1795164215738,
+	"lastUpdate": 1795164250104,
+	"cwd": "/tmp",
+	"pid": 4134186,
+	"sessionDir": "/SCRATCH/fx-installed/sessions/2026-11-20T08-42-27-302Z_01a1f81f-0e66-77fb-81a9-6ff5c878d486/2b79751e-b8d6-42ee-a068-b11533f6dce9/async-593ba8a8-6fce-466f-9fb7-f445dec1e606",
+	"endedAt": 1795164250104,
+	"sessionFile": "/SCRATCH/fx-installed/sessions/2026-11-20T08-42-27-302Z_01a1f81f-0e66-77fb-81a9-6ff5c878d486/2b79751e-b8d6-42ee-a068-b11533f6dce9/run-0/session.jsonl",
+	"steps": [
+		{
+			"agent": "delegate",
+			"sessionName": "delegate: Run `sleep 30` using the bash tool (set a timeout of at l...",
+			"status": "complete",
+			"startedAt": 1795164215743,
+			"sessionFile": "/SCRATCH/fx-installed/sessions/2026-11-20T08-42-27-302Z_01a1f81f-0e66-77fb-81a9-6ff5c878d486/2b79751e-b8d6-42ee-a068-b11533f6dce9/run-0/session.jsonl",
+			"durationMs": 34359,
+			"exitCode": 0,
+			"endedAt": 1795164250102
+		}
+	],
+	"currentStep": 0
+}

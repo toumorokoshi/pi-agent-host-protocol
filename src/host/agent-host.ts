@@ -39,6 +39,7 @@ import {
 	type SessionScheme,
 	sessionSchemeOf,
 	sessionUri,
+	subagentChatSession,
 } from "../core/uris.ts";
 import type { PiBackend } from "../pi/agent.ts";
 import {
@@ -59,6 +60,8 @@ import {
 } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
+import { loadSubagentRuns } from "../pi/subagent-tracker.ts";
+import { SUBAGENT_CHAT_READ_ONLY } from "../pi/subagents.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
 import { type AnnotationStore, memoryAnnotationStore } from "./annotation-store.ts";
@@ -85,8 +88,9 @@ export interface AgentHostOptions {
 	/**
 	 * How often to publish the processes each running `pi --mode rpc` started
 	 * in the background as its chat's background work (see
-	 * specs/background-work.md). 0 or unset only refreshes when a turn starts
-	 * or ends, and on `refreshBackgroundWork()`.
+	 * specs/background-work.md), and re-read the subagents' status and session
+	 * files (see specs/subagents.md). 0 or unset only refreshes when a turn
+	 * starts or ends, and on `refreshBackgroundWork()`.
 	 */
 	backgroundWorkIntervalMs?: number;
 	/** The clock, in ms (tests replace it). */
@@ -399,13 +403,15 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			session.adoptAgent(agent);
 		} else {
 			const { entries } = await channel.request<{ entries: SessionEntry[] }>({ type: "get_branch" });
+			const subagents = await loadSubagentRuns(entries, info.sessionFile);
 			session = this.#sessions.get(info.sessionId);
 			if (session) {
 				session.adoptAgent(agent);
 			} else {
-				session = PiSession.live(this, info, agent, entries);
+				session = PiSession.live(this, info, agent, entries, subagents);
 				this.#sessions.set(info.sessionId, session);
 				await this.#loadForks(info.sessionId);
+				await session.subagentsLoaded();
 				this.#notifyRoot("root/sessionAdded", { summary: session.summary() });
 			}
 		}
@@ -618,15 +624,27 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		// A forked chat's URI is the client's (VS Code's `ahp-chat://<id>/<b64>` parses as
 		// unknown); until its session loads, only the fork store knows it.
 		const fork = forkByChat(this.forks.all(), channel);
+		if (ref.kind === "unknown" && !fork) {
+			// A subagent chat's URI names its session; loading the session rebuilds its subagent chats.
+			const owner = subagentChatSession(channel);
+			const ownerId = owner ? parseSessionUri(owner) : undefined;
+			if (!owner || !ownerId) throw ProtocolError.notFound(channel);
+			await this.#load(owner);
+			return;
+		}
 		const sessionId = fork?.[1].session ?? (ref.kind === "unknown" ? undefined : ref.sessionId);
 		if (sessionId === undefined) throw ProtocolError.notFound(channel);
 		if (this.#sessions.has(sessionId)) return;
 		const info = (await this.#catalogSessions()).find((session) => session.id === sessionId);
 		if (!info) throw ProtocolError.sessionNotFound(channel);
 		if (this.#sessions.has(sessionId)) return;
-		this.#sessions.set(sessionId, PiSession.open(this, info.path));
+		const history = await PiSession.readHistory(this, info.path);
+		if (this.#sessions.has(sessionId)) return;
+		const session = PiSession.open(this, history);
+		this.#sessions.set(sessionId, session);
 		this.logger.debug("session loaded", { session: sessionId, path: info.path });
 		await this.#loadForks(sessionId);
+		await session.subagentsLoaded();
 	}
 
 	/** Loads the forked chats of a loaded session. Forks whose pi session file is gone are skipped. */
@@ -641,7 +659,11 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				this.logger.warn("forked chat's session file not found", { session: sessionId, chat: record.chat, fork: id });
 				continue;
 			}
-			this.#forkedChats.set(id, PiSession.openFork(this, info.path, forkBinding(record)));
+			const history = await PiSession.readHistory(this, info.path);
+			if (this.#forkedChats.has(id) || !this.#sessions.has(sessionId)) continue;
+			const fork = PiSession.openFork(this, history, forkBinding(record));
+			this.#forkedChats.set(id, fork);
+			await fork.subagentsLoaded();
 			this.logger.debug("forked chat loaded", { session: sessionId, chat: record.chat, fork: id });
 		}
 	}
@@ -679,7 +701,10 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		// Another request may have taken the URI while pi wrote the file.
 		if (this.store.snapshot(chat)) throw new ProtocolError(AhpErrorCodes.AlreadyExists, `Chat already exists: ${chat}`);
 		const record: ForkRecord = { session: sessionId, chat, source: source.chat, turnId: source.turnId };
-		const fork = PiSession.openFork(this, path, forkBinding(record));
+		const forkHistory = await PiSession.readHistory(this, path);
+		// Another request may have taken the URI while the file was read.
+		if (this.store.snapshot(chat)) throw new ProtocolError(AhpErrorCodes.AlreadyExists, `Chat already exists: ${chat}`);
+		const fork = PiSession.openFork(this, forkHistory, forkBinding(record));
 		this.#forkedChats.set(fork.id, fork);
 		this.forks.add(fork.id, record);
 		this.logger.debug("chat forked", {
@@ -883,6 +908,10 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				chat.renameChat(action.title, origin);
 				return { kind: "accepted" };
 			}
+			const chatId = ref.chatId;
+			if (this.#chats().some((chat) => chat.ownsSubagentChat(chatId))) {
+				return { kind: "rejected", reason: SUBAGENT_CHAT_READ_ONLY };
+			}
 			ref = { kind: "session", sessionId: ref.sessionId };
 		}
 		switch (ref.kind) {
@@ -907,7 +936,14 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			}
 			case "chat": {
 				const session = this.#chat(ref);
-				if (!session) return { kind: "ignored" };
+				if (!session) {
+					// Subagent chats show what a subagent does; nobody can type into them,
+					// but a client can mark one read and keep a draft in its input.
+					const owner = this.#chats().find((chat) => chat.ownsSubagentChat(ref.chatId));
+					if (!owner) return { kind: "ignored" };
+					const reason = owner.subagentChatAction(ref.chatId, action, origin);
+					return reason ? { kind: "rejected", reason } : { kind: "accepted" };
+				}
 				const reason = session.validateChatAction(action);
 				if (reason) return { kind: "rejected", reason };
 				if (this.store.dispatch(channel, action, origin)) session.onChatAction(action as ChatAction);

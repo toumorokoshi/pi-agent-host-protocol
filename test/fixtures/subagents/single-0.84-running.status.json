@@ -1,0 +1,22 @@
+{
+	"runId": "c58fb5c0-2926-4d15-bae0-f2cdc2b58c80",
+	"toolCallId": "b1cde86e-1da4-4b59-a851-156a728c2aa2",
+	"sessionId": "/SCRATCH/fx-live/sessions/2026-11-20T08-49-06-772Z_01a1f825-26d3-7342-924e-e4d82244004f.jsonl",
+	"mode": "single",
+	"state": "running",
+	"startedAt": 1795164555271,
+	"lastUpdate": 1795164555449,
+	"cwd": "/tmp",
+	"pid": 20365,
+	"sessionDir": "/SCRATCH/fx-live/sessions/2026-11-20T08-49-06-772Z_01a1f825-26d3-7342-924e-e4d82244004f/c58fb5c0-2926-4d15-bae0-f2cdc2b58c80/async-c58fb5c0-2926-4d15-bae0-f2cdc2b58c80",
+	"steps": [
+		{
+			"agent": "delegate",
+			"sessionName": "delegate: Run 'sleep 20' with the bash tool, then reply with exactl...",
+			"status": "running",
+			"startedAt": 1795164555277,
+			"sessionFile": "/SCRATCH/fx-live/sessions/2026-11-20T08-49-06-772Z_01a1f825-26d3-7342-924e-e4d82244004f/c58fb5c0-2926-4d15-bae0-f2cdc2b58c80/run-0/session.jsonl"
+		}
+	],
+	"currentStep": 0
+}

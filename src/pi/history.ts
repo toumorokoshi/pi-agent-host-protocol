@@ -12,6 +12,7 @@ import {
 	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
 import { firstText, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
+import type { ExtraToolCalls } from "./turn-mapper.ts";
 
 interface ContentBlock {
 	type: string;
@@ -51,14 +52,36 @@ interface TurnBuilder {
 	/** Index into `responseParts` of each tool call awaiting its result. */
 	pendingTools: Map<string, number>;
 	errorMessage?: string;
+	/** The last assistant message ended the run (stopped for anything but a tool call). */
+	runEnded: boolean;
+	/** A custom message arrived after the run ended: the next assistant message starts a turn. */
+	continuationId?: string;
+}
+
+/** Text of a turn that pi started without a user message (for example, an extension continuing a run). */
+export const CONTINUED = "Continued in pi";
+
+/** The hidden message `/ahp-resume` sends: it continues the errored turn rather than starting one. */
+const RESUME_MARKER = "ahp-resume";
+
+function newTurn(id: string, timestamp: string, message: Turn["message"]): TurnBuilder {
+	return {
+		turn: { id, startedAt: timestamp, message, responseParts: [], usage: undefined, state: TurnState.Complete },
+		endedAt: Date.parse(timestamp),
+		usage: { input: 0, output: 0, cacheRead: 0, seen: false },
+		pendingTools: new Map(),
+		runEnded: false,
+	};
 }
 
 /**
  * Reconstructs AHP turns from the active branch of a pi session. Each user
  * message starts a turn; assistant messages and tool results that follow it
- * become that turn's response parts.
+ * become that turn's response parts. `extraCalls` adds the host's own tool
+ * calls after a tool call completes (a row per subagent), where a live turn
+ * adds them.
  */
-export function turnsFromEntries(entries: readonly SessionEntry[]): Turn[] {
+export function turnsFromEntries(entries: readonly SessionEntry[], extraCalls?: ExtraToolCalls): Turn[] {
 	const turns: Turn[] = [];
 	let current: TurnBuilder | undefined;
 
@@ -87,25 +110,28 @@ export function turnsFromEntries(entries: readonly SessionEntry[]): Turn[] {
 	};
 
 	for (const entry of entries) {
+		if (entry.type === "custom_message") {
+			// pi sends these to wake the agent (a subagent's completion, for one);
+			// one that starts a run after the last one ended is a turn of its own,
+			// as it is live ("Continued in pi").
+			if (current?.runEnded && entry.customType !== RESUME_MARKER) current.continuationId ??= entry.id;
+			continue;
+		}
 		if (entry.type !== "message") continue;
 		const message = entry.message as unknown as PiMessage;
 		const at = Date.parse(entry.timestamp);
 		if (message.role === "user") {
 			close();
-			current = {
-				turn: {
-					id: entry.id,
-					startedAt: entry.timestamp,
-					message: { text: userMessageText(message.content), origin: { kind: MessageKind.User } },
-					responseParts: [],
-					usage: undefined,
-					state: TurnState.Complete,
-				},
-				endedAt: at,
-				usage: { input: 0, output: 0, cacheRead: 0, seen: false },
-				pendingTools: new Map(),
-			};
+			current = newTurn(entry.id, entry.timestamp, {
+				text: userMessageText(message.content),
+				origin: { kind: MessageKind.User },
+			});
 			continue;
+		}
+		if (message.role === "assistant" && current?.continuationId) {
+			const id = current.continuationId;
+			close();
+			current = newTurn(id, entry.timestamp, { text: CONTINUED, origin: { kind: MessageKind.SystemNotification } });
 		}
 		if (!current) continue;
 		if (Number.isFinite(at)) current.endedAt = at;
@@ -117,6 +143,9 @@ export function turnsFromEntries(entries: readonly SessionEntry[]): Turn[] {
 			if (part?.kind === ResponsePartKind.ToolCall && index !== undefined) {
 				part.toolCall = completed(part.toolCall, message);
 				current.pendingTools.delete(message.toolCallId);
+				for (const toolCall of extraCalls?.(message.toolCallId) ?? []) {
+					current.turn.responseParts.push({ kind: ResponsePartKind.ToolCall, toolCall });
+				}
 			}
 		}
 	}
@@ -155,6 +184,7 @@ function appendAssistant(builder: TurnBuilder, entryId: string, message: PiMessa
 		builder.usage.cacheRead += message.usage.cacheRead ?? 0;
 	}
 	if (message.model) builder.usage.model = message.model;
+	builder.runEnded = message.stopReason !== "toolUse";
 	if (message.stopReason === "aborted") {
 		builder.turn.state = TurnState.Cancelled;
 	} else if (message.stopReason === "error") {

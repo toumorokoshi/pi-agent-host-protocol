@@ -1,0 +1,58 @@
+{
+	"runId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+	"toolCallId": "toolu_vrtx_01EoGsvXbAQKDGPbgsVEQ5dp",
+	"sessionId": "/SCRATCH/fx-live/sessions/2026-11-20T08-49-06-772Z_01a1f825-26d3-7342-924e-e4d82244004f.jsonl",
+	"mode": "workflow",
+	"state": "running",
+	"startedAt": 1795164552958,
+	"lastUpdate": 1795164553111,
+	"cwd": "/tmp",
+	"pid": 19636,
+	"workflowChildren": {
+		"version": 1,
+		"parentToolCallId": "toolu_vrtx_01EoGsvXbAQKDGPbgsVEQ5dp",
+		"workflowRunId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+		"inventoryComplete": false,
+		"workflowState": "running",
+		"children": [
+			{
+				"childId": "task-1",
+				"state": "running",
+				"runId": "c58fb5c0-2926-4d15-bae0-f2cdc2b58c80",
+				"agent": "delegate",
+				"sessionName": "delegate: Run 'sleep 20' with the bash tool, then reply with exactl..."
+			},
+			{
+				"childId": "task-2",
+				"state": "running",
+				"runId": "478a2a04-bdc2-4ebc-a553-2dadb004b924",
+				"agent": "delegate",
+				"sessionName": "delegate: List the contents of /tmp using the bash tool (ls /tmp), ..."
+			}
+		]
+	},
+	"steps": [
+		{
+			"agent": "delegate",
+			"sessionName": "delegate: Run 'sleep 20' with the bash tool, then reply with exactl...",
+			"label": "task-1",
+			"workflowKey": "task-1",
+			"parentWorkflowRunId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+			"status": "running",
+			"startedAt": 1795164553035,
+			"sessionFile": "/SCRATCH/fx-live/sessions/2026-11-20T08-49-06-772Z_01a1f825-26d3-7342-924e-e4d82244004f/c58fb5c0-2926-4d15-bae0-f2cdc2b58c80/run-0/session.jsonl",
+			"runId": "c58fb5c0-2926-4d15-bae0-f2cdc2b58c80"
+		},
+		{
+			"agent": "delegate",
+			"sessionName": "delegate: List the contents of /tmp using the bash tool (ls /tmp), ...",
+			"label": "task-2",
+			"workflowKey": "task-2",
+			"parentWorkflowRunId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+			"status": "running",
+			"startedAt": 1795164553100,
+			"sessionFile": "/SCRATCH/fx-live/sessions/2026-11-20T08-49-06-772Z_01a1f825-26d3-7342-924e-e4d82244004f/478a2a04-bdc2-4ebc-a553-2dadb004b924/run-0/session.jsonl",
+			"runId": "478a2a04-bdc2-4ebc-a553-2dadb004b924"
+		}
+	]
+}

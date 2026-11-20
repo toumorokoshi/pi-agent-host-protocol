@@ -1,0 +1,28 @@
+{
+	"runId": "a44d414e-e78e-4da5-8098-d2ae7a3fe1e1",
+	"sessionId": "/SCRATCH/fx-installed/sessions/2026-11-20T08-42-27-302Z_01a1f81f-0e66-77fb-81a9-6ff5c878d486.jsonl",
+	"mode": "single",
+	"state": "failed",
+	"startedAt": 1795164157419,
+	"lastUpdate": 1795164187572,
+	"cwd": "/tmp",
+	"pid": 4098149,
+	"sessionDir": "/SCRATCH/fx-installed/sessions/2026-11-20T08-42-27-302Z_01a1f81f-0e66-77fb-81a9-6ff5c878d486/4f110003-b170-4103-a69a-f4282947c37c/async-a44d414e-e78e-4da5-8098-d2ae7a3fe1e1",
+	"endedAt": 1795164187572,
+	"error": "No models available. Check your installation or add models to models.json.",
+	"sessionFile": "/SCRATCH/fx-installed/sessions/2026-11-20T08-42-27-302Z_01a1f81f-0e66-77fb-81a9-6ff5c878d486/4f110003-b170-4103-a69a-f4282947c37c/run-0/session.jsonl",
+	"steps": [
+		{
+			"agent": "delegate",
+			"sessionName": "delegate: Run `sleep 30` using the bash tool (set a timeout of at l...",
+			"status": "failed",
+			"startedAt": 1795164157423,
+			"sessionFile": "/SCRATCH/fx-installed/sessions/2026-11-20T08-42-27-302Z_01a1f81f-0e66-77fb-81a9-6ff5c878d486/4f110003-b170-4103-a69a-f4282947c37c/run-0/session.jsonl",
+			"durationMs": 30147,
+			"error": "No models available. Check your installation or add models to models.json.",
+			"exitCode": 1,
+			"endedAt": 1795164187570
+		}
+	],
+	"currentStep": 0
+}

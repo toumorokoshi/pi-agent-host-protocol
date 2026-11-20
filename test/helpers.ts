@@ -81,6 +81,7 @@ export async function startHost(
 		mode?: PiMode;
 		bridge?: boolean;
 		idleTimeoutMs?: number;
+		backgroundWorkIntervalMs?: number;
 		now?: () => number;
 		/** Extra pi extensions the RPC child loads (rpc mode only). */
 		extensions?: readonly string[];
@@ -100,6 +101,7 @@ export async function startHost(
 		serverVersion: "test",
 		logger: options.logger,
 		idleTimeoutMs: options.idleTimeoutMs,
+		backgroundWorkIntervalMs: options.backgroundWorkIntervalMs,
 		now: options.now,
 		archive: await fileArchiveStore(join(dir, "archived-sessions.json")),
 		forks: await fileForkStore(join(dir, "forked-chats.json")),

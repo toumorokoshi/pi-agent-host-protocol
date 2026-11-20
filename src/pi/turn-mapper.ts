@@ -2,10 +2,12 @@ import {
 	ActionType,
 	type ChatAction,
 	ResponsePartKind,
+	type ToolCallCompletedState,
 	ToolCallConfirmationReason,
 	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
 import type { PiEvent } from "./agent.ts";
+import { completedToolCallActions } from "./tool-call-actions.ts";
 import { firstText, toolActivity, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
 
 /**
@@ -18,6 +20,13 @@ export type TurnOutcome =
 	| { kind: "complete" }
 	| { kind: "cancelled" }
 	| { kind: "error"; message: string; resumable?: boolean };
+
+/**
+ * Completed tool calls the host adds to a turn after the tool call with this
+ * id completes (undefined for none): a row per subagent a `subagent` call
+ * started.
+ */
+export type ExtraToolCalls = (toolCallId: string) => readonly ToolCallCompletedState[] | undefined;
 
 /** Activity text while the model produces output that is not a tool call. */
 export const ACTIVITY_THINKING = "Thinking";
@@ -76,15 +85,19 @@ export class TurnMapper {
 	readonly #runningTools = new Map<string, string>();
 
 	readonly #attempt: number;
+	readonly #extraCalls: ExtraToolCalls | undefined;
 
 	/**
 	 * @param attempt Distinguishes the runs of one turn (0 for the first, then
 	 *   one per `chat/turnResume`) so their response part ids never collide.
+	 * @param extraCalls Tool calls the host adds after a tool call completes,
+	 *   such as a row per subagent a `subagent` call started.
 	 */
-	constructor(turnId: string, emit: (action: ChatAction) => void, attempt = 0) {
+	constructor(turnId: string, emit: (action: ChatAction) => void, attempt = 0, extraCalls?: ExtraToolCalls) {
 		this.#attempt = attempt;
 		this.turnId = turnId;
 		this.#emit = emit;
+		this.#extraCalls = extraCalls;
 	}
 
 	get aborted(): boolean {
@@ -137,6 +150,9 @@ export class TurnMapper {
 						...(event.isError ? { error: { message: firstText(content) ?? "Tool failed" } } : {}),
 					},
 				});
+				for (const call of this.#extraCalls?.(event.toolCallId) ?? []) {
+					for (const action of completedToolCallActions(this.turnId, call)) this.#emit(action);
+				}
 				this.#runningTools.delete(event.toolCallId);
 				// Another tool may still be running; otherwise the model is called again with the results.
 				this.#setActivity([...this.#runningTools.values()].at(-1) ?? ACTIVITY_THINKING);

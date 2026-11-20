@@ -51,12 +51,21 @@ import {
 	type PiUiHandler,
 } from "./dialogs.ts";
 import { forkKeep, forkLeaf, forkTurnError } from "./forks.ts";
-import { turnsFromEntries, userMessageText } from "./history.ts";
+import { CONTINUED, turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
+import { loadSubagentRuns, type RestoredRun, SubagentTracker } from "./subagent-tracker.ts";
+import { isSubagentRunner, subagentWorkActions } from "./subagents.ts";
 import { recordedUserTurns } from "./truncation.ts";
 import { TurnMapper, type TurnOutcome } from "./turn-mapper.ts";
+
+/** A pi session file's active branch and the subagent runs found in it (see `PiSession.readHistory`). */
+export interface SessionHistory {
+	readonly manager: SessionManager;
+	readonly entries: readonly SessionEntry[];
+	readonly subagents: readonly RestoredRun[];
+}
 
 export interface SessionHostContext {
 	readonly store: StateStore;
@@ -126,9 +135,6 @@ const RUN_STARTED: Record<RunKind["kind"], string> = {
 	resume: "turn resumed",
 	steering: "turn started for queued steering",
 };
-
-/** Text of a turn that pi started without a user message (for example, an extension continuing a run). */
-const CONTINUED = "Continued in pi";
 
 const TITLE_LENGTH = 80;
 const UNTITLED = "New session";
@@ -202,6 +208,8 @@ export class PiSession {
 		notify: (message, level) => this.#notify(message, level),
 	};
 	#disposed = false;
+	/** The subagents this chat started, shown as read-only chats of its session (see specs/subagents.md). */
+	readonly #subagents: SubagentTracker;
 	#hasTurns: boolean;
 	/** When a client or pi last used the session, for stopping idle pi processes. */
 	#lastActivity: number;
@@ -222,6 +230,18 @@ export class PiSession {
 		this.#binding = binding;
 		this.#hasTurns = false;
 		this.#lastActivity = ctx.now();
+		this.#subagents = new SubagentTracker({
+			store: ctx.store,
+			logger: ctx.logger,
+			sessionId: this.sessionId,
+			...(binding.kind === "fork" ? { scope: id } : {}),
+			parentChat: this.chat,
+			activeTurnWith: (toolCallId) => this.#activeTurnWith(toolCallId),
+			sessionFile: () => this.#sessionManager.getSessionFile(),
+			catalogChanged: () => this.#syncCatalog(),
+			backgroundWorkChanged: () => this.#applySubagentWork(),
+			now: ctx.now,
+		});
 	}
 
 	get cwd(): string {
@@ -260,13 +280,33 @@ export class PiSession {
 	}
 
 	/**
+	 * Reads an existing pi session file's active branch and what is left of
+	 * the subagent runs in it. Async, and apart from `open` so that the host
+	 * can check for a concurrent load before the session is registered.
+	 */
+	static async readHistory(ctx: SessionHostContext, path: string): Promise<SessionHistory> {
+		const manager = ctx.backend.openSessionManager(path);
+		const entries = manager.getBranch();
+		return { manager, entries, subagents: await loadSubagentRuns(entries, manager.getSessionFile()) };
+	}
+
+	/**
 	 * An existing pi session file. History is loaded eagerly; the agent starts
 	 * on the first turn. Its folder's commands are read meanwhile (without an
 	 * agent) and published, so `/` completes before pi starts.
 	 */
-	static open(ctx: SessionHostContext, path: string): PiSession {
-		const manager = ctx.backend.openSessionManager(path);
-		const session = PiSession.#fromHistory(ctx, manager, manager.getBranch(), manager.getSessionName());
+	static open(ctx: SessionHostContext, history: SessionHistory): PiSession {
+		const { manager, entries, subagents } = history;
+		const session = PiSession.#fromHistory(
+			ctx,
+			manager,
+			entries,
+			manager.getSessionName(),
+			manager.getSessionId(),
+			manager.getCwd(),
+			{ kind: "session" },
+			subagents,
+		);
 		session.#loadCommands(ctx.backend.folderCommands(session.cwd));
 		return session;
 	}
@@ -275,18 +315,24 @@ export class PiSession {
 	 * A forked chat's pi session file, published as a chat of its AHP
 	 * session (`session/chatAdded`). The agent starts on the chat's first turn.
 	 */
-	static openFork(ctx: SessionHostContext, path: string, binding: Extract<ChatBinding, { kind: "fork" }>): PiSession {
-		const manager = ctx.backend.openSessionManager(path);
+	static openFork(
+		ctx: SessionHostContext,
+		history: SessionHistory,
+		binding: Extract<ChatBinding, { kind: "fork" }>,
+	): PiSession {
+		const { manager, entries, subagents } = history;
 		const session = PiSession.#fromHistory(
 			ctx,
 			manager,
-			manager.getBranch(),
+			entries,
 			manager.getSessionName(),
 			manager.getSessionId(),
 			manager.getCwd(),
 			binding,
+			subagents,
 		);
 		session.#dispatchSession({ type: ActionType.SessionChatAdded, summary: session.#currentChatSummary() });
+		session.#subagents.publish();
 		session.#syncCatalog();
 		session.#loadCommands(ctx.backend.folderCommands(session.cwd));
 		return session;
@@ -323,12 +369,22 @@ export class PiSession {
 		info: { sessionId: string; sessionFile?: string; cwd: string; name?: string },
 		agent: PiAgent,
 		entries: readonly SessionEntry[],
+		subagents: readonly RestoredRun[],
 	): PiSession {
 		const manager =
 			info.sessionFile && existsSync(info.sessionFile)
 				? ctx.backend.openSessionManager(info.sessionFile)
 				: ctx.backend.newSessionManager(info.cwd, info.sessionId);
-		const session = PiSession.#fromHistory(ctx, manager, entries, info.name, info.sessionId, info.cwd);
+		const session = PiSession.#fromHistory(
+			ctx,
+			manager,
+			entries,
+			info.name,
+			info.sessionId,
+			info.cwd,
+			{ kind: "session" },
+			subagents,
+		);
 		session.#agent = Promise.resolve(session.#observe(agent));
 		session.#tuiAgent = agent;
 		return session;
@@ -342,11 +398,13 @@ export class PiSession {
 		id = manager.getSessionId(),
 		cwd = manager.getCwd(),
 		binding: ChatBinding = { kind: "session" },
+		restored: readonly RestoredRun[] = [],
 	): PiSession {
 		const header = manager.getHeader();
 		const createdAt = header?.timestamp ?? new Date().toISOString();
 		const session = new PiSession(ctx, id, cwd, manager, createdAt, binding);
-		const turns = turnsFromEntries([...entries]);
+		session.#subagents.restore(restored);
+		const turns = turnsFromEntries([...entries], (toolCallId) => session.#subagents.callsFor(toolCallId));
 		const title = name ?? (turns[0] ? titleFrom(turns[0].message.text) : UNTITLED);
 		const lastTurn = turns.at(-1);
 		const modifiedAt =
@@ -366,7 +424,32 @@ export class PiSession {
 			{ ...session.#chatSummary(title, status, modifiedAt), turns },
 			ctx.annotations.annotationsOf(id),
 		);
+		session.#subagents.publish();
 		return session;
+	}
+
+	/** Resolves once the subagent chats of a loaded chat show their transcripts (read asynchronously after the chat was added). */
+	subagentsLoaded(): Promise<void> {
+		return this.#subagents.refresh();
+	}
+
+	/** The id of this chat's running turn, if it holds the tool call `toolCallId`. */
+	#activeTurnWith(toolCallId: string): string | undefined {
+		const turn = this.#ctx.store.chat(this.id)?.activeTurn;
+		const holds = turn?.responseParts.some(
+			(part) => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === toolCallId,
+		);
+		return holds ? turn?.id : undefined;
+	}
+
+	/** True if `chatId` is one of the read-only subagent chats this chat started. */
+	ownsSubagentChat(chatId: string): boolean {
+		return this.#subagents.owns(chatId);
+	}
+
+	/** Applies a client's action on one of this chat's subagent chats, or says why not. */
+	subagentChatAction(chatId: string, action: StateAction, origin: ActionOrigin): string | undefined {
+		return this.#subagents.clientAction(chatId, action, origin);
 	}
 
 	get hasTurns(): boolean {
@@ -705,6 +788,16 @@ export class PiSession {
 	 * cleared. A process table that cannot be read leaves them as they are.
 	 */
 	async refreshBackgroundWork(): Promise<void> {
+		// The subagents' files change without a pi event; their chats follow this refresh too.
+		const subagents = this.#subagents.refresh();
+		try {
+			await this.#refreshProcesses();
+		} finally {
+			await subagents;
+		}
+	}
+
+	async #refreshProcesses(): Promise<void> {
 		const pending = this.#agent;
 		const agent = await pending?.catch(() => undefined);
 		if (!agent || agent.closed || !agent.backgroundProcesses) {
@@ -721,15 +814,37 @@ export class PiSession {
 		if (this.#agent === pending && !agent.closed) this.#applyBackgroundWork(processes);
 	}
 
+	/**
+	 * Publishes pi's background processes as shells. The processes
+	 * pi-subagents runs subagents in are left out: the subagents are listed as
+	 * `subagent` entries instead (see `#applySubagentWork`). They still keep
+	 * an idle pi from being stopped (`suspend` reads the processes itself).
+	 */
 	#applyBackgroundWork(processes: readonly BackgroundProcess[]): void {
 		const chat = this.#ctx.store.chat(this.id);
 		if (!chat) return;
 		const before = chat.backgroundWork?.length ?? 0;
-		const actions = backgroundWorkActions(chat.backgroundWork ?? [], {
-			processes,
-			running: this.idleState(undefined).running,
-			now: new Date(this.#ctx.now()).toISOString(),
-		});
+		const shells = processes.filter((process) => !isSubagentRunner(process.command));
+		const actions = [
+			...backgroundWorkActions(chat.backgroundWork ?? [], {
+				processes: shells,
+				running: this.idleState(undefined).running,
+				now: new Date(this.#ctx.now()).toISOString(),
+			}),
+			...subagentWorkActions(chat.backgroundWork ?? [], this.#subagents.runningWork()),
+		];
+		this.#publishBackgroundWork(before, actions);
+	}
+
+	/** Lists the subagents still running as the chat's `subagent` background work. */
+	#applySubagentWork(): void {
+		const chat = this.#ctx.store.chat(this.id);
+		if (!chat) return;
+		const before = chat.backgroundWork?.length ?? 0;
+		this.#publishBackgroundWork(before, subagentWorkActions(chat.backgroundWork ?? [], this.#subagents.runningWork()));
+	}
+
+	#publishBackgroundWork(before: number, actions: readonly ChatAction[]): void {
 		for (const action of actions) this.#dispatchChat(action);
 		const after = this.#ctx.store.chat(this.id)?.backgroundWork?.length ?? 0;
 		if (after !== before) {
@@ -740,6 +855,7 @@ export class PiSession {
 
 	async dispose(): Promise<void> {
 		this.#disposed = true;
+		this.#subagents.dispose();
 		this.#closeDialogs();
 		const agent = this.#agent;
 		this.#agent = undefined;
@@ -805,6 +921,7 @@ export class PiSession {
 				if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
 			},
 			attempt,
+			this.#subagentCalls,
 		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false, settled: false };
 		this.#turn = turn;
@@ -1041,9 +1158,14 @@ export class PiSession {
 		this.#closeDialogs();
 		previous.mapper.finish({ kind: "complete" }, Date.now() - previous.startedAt);
 		const turnId = crypto.randomUUID();
-		const mapper = new TurnMapper(turnId, (action) => {
-			if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
-		});
+		const mapper = new TurnMapper(
+			turnId,
+			(action) => {
+				if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
+			},
+			0,
+			this.#subagentCalls,
+		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false, settled: false };
 		this.#dispatchChat({ type: ActionType.ChatTurnStarted, turnId, startedAt: new Date().toISOString(), message });
 		if (this.#turn === previous) this.#turn = turn;
@@ -1128,7 +1250,14 @@ export class PiSession {
 		this.#ctx.logger.debug("extension notification outside a turn", { session: this.id, level, message });
 	}
 
-	/** Watches an agent for runs started outside the host. Returns the agent. */
+	/** The rows, one per subagent, that follow a `subagent` tool call in its turn. */
+	readonly #subagentCalls = (toolCallId: string) => this.#subagents.callsFor(toolCallId);
+
+	/**
+	 * Watches an agent for runs started outside the host, and for subagents.
+	 * Subscribed before any run's turn mapper, so a `subagent` call's run is
+	 * tracked by the time the mapper publishes its result. Returns the agent.
+	 */
 	#observe(agent: PiAgent): PiAgent {
 		if (!this.#observed.has(agent)) {
 			this.#observed.add(agent);
@@ -1136,6 +1265,7 @@ export class PiSession {
 				if (event.type === "queue_update") {
 					this.#piQueue = { agent, queue: { steering: event.steering, followUp: event.followUp } };
 				}
+				this.#subagents.handle(event);
 				this.#onAgentEvent(event);
 			});
 			this.#loadCommands(agent.commands());
@@ -1245,9 +1375,14 @@ export class PiSession {
 
 	#startExternalTurn(message: Message): void {
 		const turnId = crypto.randomUUID();
-		const mapper = new TurnMapper(turnId, (action) => {
-			if (!turn.cancelledByClient) this.#dispatchChat(action);
-		});
+		const mapper = new TurnMapper(
+			turnId,
+			(action) => {
+				if (!turn.cancelledByClient) this.#dispatchChat(action);
+			},
+			0,
+			this.#subagentCalls,
+		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false, settled: false };
 		this.#externalRun = turn;
 		this.#resumableTurn = undefined;

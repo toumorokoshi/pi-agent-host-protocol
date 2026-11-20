@@ -20,7 +20,8 @@ The idle-session check already finds it (see [idle-sessions.md](idle-sessions.md
 
 ### Publishing it (`src/pi/background-work.ts`, pure)
 
-- Each process becomes a `BackgroundShellWork`: id `process:<pid>`, `command` the full command line, `label` the command cut to 80 characters, `startedAt` when the host first saw it, and `_meta.pid`.
+- pi-subagents' runner processes are left out: their subagents are `subagent` entries instead (see [subagents.md](subagents.md)). They still count when deciding whether an idle pi may be stopped.
+- Each other process becomes a `BackgroundShellWork`: id `process:<pid>`, `command` the full command line, `label` the command cut to 80 characters, `startedAt` when the host first saw it, and `_meta.pid`.
 - `backgroundWorkActions(current, { processes, running, now })` returns the actions that bring the chat in line: `chat/backgroundWorkRemoved` for entries whose process ended, `chat/backgroundWorkSet` for processes not listed yet. Entries whose id does not start with `process:` are left alone.
 - **While a turn runs, nothing is added.** A new child during a turn is most likely a tool the turn is waiting on (a `bash` call). Processes still running when the turn ends are added by the next refresh. Ended ones are removed at any time.
 
@@ -29,9 +30,11 @@ The idle-session check already finds it (see [idle-sessions.md](idle-sessions.md
 `PiSession.refreshBackgroundWork()` reads the session's current agent only; it never starts pi, so sessions loaded from history cost nothing. With no agent (never started, suspended, exited, embedded, or a pi terminal) the entries are cleared. A failed read keeps them as they are.
 
 `AgentHost.refreshBackgroundWork()` refreshes every loaded session:
-- every `backgroundWorkIntervalMs` (5 s from the CLI in `rpc` mode; off by default for library users);
+- every `backgroundWorkIntervalMs` (5 s from the CLI; off by default for library users);
 - whenever a session starts or ends a turn (`activityChanged`), so work left by a turn shows within one `ps`;
 - after an idle session is suspended (which needs no background work), its entries are cleared.
+
+`PiSession.refreshBackgroundWork()` also refreshes the session's subagent tracker (status and session files, see [subagents.md](subagents.md)), whether or not pi is running, so subagent chats follow the same schedule.
 
 A call made while a refresh runs waits for it and then refreshes once more; calls made meanwhile share that one.
 

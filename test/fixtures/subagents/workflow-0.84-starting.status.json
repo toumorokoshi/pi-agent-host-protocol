@@ -1,0 +1,20 @@
+{
+	"runId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+	"toolCallId": "toolu_vrtx_01EoGsvXbAQKDGPbgsVEQ5dp",
+	"sessionId": "/SCRATCH/fx-live/sessions/2026-11-20T08-49-06-772Z_01a1f825-26d3-7342-924e-e4d82244004f.jsonl",
+	"mode": "workflow",
+	"state": "running",
+	"startedAt": 1795164552958,
+	"lastUpdate": 1795164552961,
+	"cwd": "/tmp",
+	"pid": 19636,
+	"workflowChildren": {
+		"version": 1,
+		"parentToolCallId": "toolu_vrtx_01EoGsvXbAQKDGPbgsVEQ5dp",
+		"workflowRunId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+		"inventoryComplete": false,
+		"workflowState": "running",
+		"children": []
+	},
+	"steps": []
+}

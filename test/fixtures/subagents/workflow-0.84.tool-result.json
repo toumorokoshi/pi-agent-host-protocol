@@ -1,0 +1,34 @@
+{
+	"args": {
+		"workflow": "parallel",
+		"args": {
+			"tasks": [
+				{
+					"agent": "delegate",
+					"task": "Run 'sleep 20' with the bash tool, then reply with exactly: done"
+				},
+				{
+					"agent": "delegate",
+					"task": "List the contents of /tmp using the bash tool (ls /tmp), then reply with exactly: done"
+				}
+			]
+		},
+		"async": true
+	},
+	"details": {
+		"mode": "workflow",
+		"runId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+		"asyncId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+		"asyncDir": "/tmp/pi-subagents-uid-1001/async-subagent-runs/1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+		"toolCallId": "toolu_vrtx_01EoGsvXbAQKDGPbgsVEQ5dp",
+		"workflowChildren": {
+			"version": 1,
+			"parentToolCallId": "toolu_vrtx_01EoGsvXbAQKDGPbgsVEQ5dp",
+			"workflowRunId": "1bb47ca0-7b21-4fc2-9b39-7338d1beb8f5",
+			"inventoryComplete": false,
+			"workflowState": "running",
+			"children": []
+		},
+		"results": []
+	}
+}

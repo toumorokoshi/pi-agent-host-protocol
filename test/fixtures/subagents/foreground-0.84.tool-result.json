@@ -1,0 +1,20 @@
+{
+	"args": {
+		"agent": "delegate",
+		"task": "List the contents of /tmp using bash (ls /tmp), then reply with just: done",
+		"async": false
+	},
+	"details": {
+		"mode": "single",
+		"runId": "6eb96a16-cbd7-4ec0-90b1-d8ba2a7ba7f4",
+		"results": [
+			{
+				"index": 0,
+				"agent": "delegate",
+				"sessionName": "delegate: List the contents of /tmp using bash (ls /tmp), then repl...",
+				"exitCode": 0,
+				"sessionFile": "/SCRATCH/fx-fg/sessions/2026-11-20T08-42-26-933Z_01a1f81f-0cf4-73b3-882a-739befd93355/6eb96a16-cbd7-4ec0-90b1-d8ba2a7ba7f4/run-0/session.jsonl"
+			}
+		]
+	}
+}

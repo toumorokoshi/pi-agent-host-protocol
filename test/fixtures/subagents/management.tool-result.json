@@ -1,0 +1,10 @@
+{
+	"args": {
+		"action": "list",
+		"capabilities": true
+	},
+	"details": {
+		"mode": "management",
+		"results": []
+	}
+}

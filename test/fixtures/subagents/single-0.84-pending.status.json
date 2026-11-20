@@ -1,0 +1,17 @@
+{
+	"runId": "c58fb5c0-2926-4d15-bae0-f2cdc2b58c80",
+	"toolCallId": "b1cde86e-1da4-4b59-a851-156a728c2aa2",
+	"sessionId": "/SCRATCH/fx-live/sessions/2026-11-20T08-49-06-772Z_01a1f825-26d3-7342-924e-e4d82244004f.jsonl",
+	"mode": "single",
+	"state": "running",
+	"startedAt": 1795164553070,
+	"lastUpdate": 1795164553070,
+	"pid": 20365,
+	"steps": [
+		{
+			"agent": "delegate",
+			"status": "pending"
+		}
+	],
+	"currentStep": 0
+}
