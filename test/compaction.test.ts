@@ -152,6 +152,7 @@ describe("/compact from a client", () => {
 		);
 		assert.equal(turn(chat, turnId).state, TurnState.Complete);
 		assert.match(markdown(chat, turnId), /about 12k tokens before, 3\.0k after/);
+		assert.equal(turn(chat, turnId).usage?.inputTokens, 3_000, "the context gauge drops to the size after");
 	});
 
 	test("/compact with instructions passes them to pi", async () => {

@@ -1052,7 +1052,10 @@ export class PiSession {
 			tokensBefore: result?.tokensBefore,
 			tokensAfter: result?.estimatedTokensAfter,
 		});
-		if (!turn.cancelledByClient) turn.mapper.notice(compactDoneText(result));
+		if (!turn.cancelledByClient) {
+			turn.mapper.notice(compactDoneText(result));
+			if (result?.estimatedTokensAfter !== undefined) turn.mapper.compacted(result.estimatedTokensAfter);
+		}
 	}
 
 	/**

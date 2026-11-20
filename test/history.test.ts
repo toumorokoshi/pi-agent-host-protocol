@@ -78,4 +78,30 @@ describe("rebuilt history", () => {
 		assert.equal(forkKeep(rebuilt, "woken", new Set()), 1);
 		assert.equal(forkKeep(rebuilt, "two", new Set()), 2);
 	});
+
+	test("a compaction entry changes no turn's usage, and a call with empty usage keeps the last real call's", () => {
+		const call = (id: string, stopReason: string, usage: object) => ({
+			type: "message",
+			id,
+			timestamp: at,
+			message: { role: "assistant", content: [], stopReason, usage, model: "m" },
+		});
+		const compaction = {
+			type: "compaction",
+			id: "c",
+			timestamp: at,
+			summary: "x".repeat(8_000),
+			firstKeptEntryId: "a",
+			tokensBefore: 40_000,
+		};
+		const rebuilt = turns([
+			user("one"),
+			call("a", "toolUse", { input: 40_000, output: 5 }),
+			call("b", "error", { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
+			compaction,
+			user("two"),
+		]);
+		assert.equal(rebuilt[0]?.usage?.inputTokens, 40_000);
+		assert.equal(rebuilt[1]?.usage, undefined);
+	});
 });

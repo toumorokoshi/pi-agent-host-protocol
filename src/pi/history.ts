@@ -9,10 +9,10 @@ import {
 	ToolCallStatus,
 	type Turn,
 	TurnState,
-	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
 import { firstText, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
 import type { ExtraToolCalls } from "./turn-mapper.ts";
+import { addCall, type PiUsage, type TurnUsage, usageInfo } from "./usage.ts";
 
 interface ContentBlock {
 	type: string;
@@ -29,7 +29,7 @@ interface PiMessage {
 	stopReason?: string;
 	errorMessage?: string;
 	model?: string;
-	usage?: { input?: number; output?: number; cacheRead?: number };
+	usage?: PiUsage;
 	toolCallId?: string;
 	toolName?: string;
 	isError?: boolean;
@@ -48,7 +48,7 @@ export function userMessageText(content: PiMessage["content"]): string {
 interface TurnBuilder {
 	turn: Turn;
 	endedAt: number;
-	usage: { input: number; output: number; cacheRead: number; model?: string; seen: boolean };
+	usage: TurnUsage | undefined;
 	/** Index into `responseParts` of each tool call awaiting its result. */
 	pendingTools: Map<string, number>;
 	errorMessage?: string;
@@ -68,7 +68,7 @@ function newTurn(id: string, timestamp: string, message: Turn["message"]): TurnB
 	return {
 		turn: { id, startedAt: timestamp, message, responseParts: [], usage: undefined, state: TurnState.Complete },
 		endedAt: Date.parse(timestamp),
-		usage: { input: 0, output: 0, cacheRead: 0, seen: false },
+		usage: undefined,
 		pendingTools: new Map(),
 		runEnded: false,
 	};
@@ -94,7 +94,7 @@ export function turnsFromEntries(entries: readonly SessionEntry[], extraCalls?: 
 				part.toolCall = cancelled(part.toolCall);
 			}
 		}
-		if (current.usage.seen) {
+		if (current.usage) {
 			turn.usage = usageInfo(current.usage);
 		}
 		if (current.errorMessage !== undefined && turn.state === TurnState.Error) {
@@ -177,13 +177,7 @@ function appendAssistant(builder: TurnBuilder, entryId: string, message: PiMessa
 			parts.push({ kind: ResponsePartKind.ToolCall, toolCall } satisfies ResponsePart);
 		}
 	});
-	if (message.usage) {
-		builder.usage.seen = true;
-		builder.usage.input += message.usage.input ?? 0;
-		builder.usage.output += message.usage.output ?? 0;
-		builder.usage.cacheRead += message.usage.cacheRead ?? 0;
-	}
-	if (message.model) builder.usage.model = message.model;
+	builder.usage = addCall(builder.usage, message.usage, message.model);
 	builder.runEnded = message.stopReason !== "toolUse";
 	if (message.stopReason === "aborted") {
 		builder.turn.state = TurnState.Cancelled;
@@ -231,13 +225,4 @@ function parseArgs(input: unknown): Record<string, unknown> | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-function usageInfo(usage: TurnBuilder["usage"]): UsageInfo {
-	return {
-		inputTokens: usage.input,
-		outputTokens: usage.output,
-		...(usage.cacheRead ? { cacheReadTokens: usage.cacheRead } : {}),
-		...(usage.model ? { model: usage.model } : {}),
-	};
 }
