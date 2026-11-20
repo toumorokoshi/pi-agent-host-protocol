@@ -7,6 +7,7 @@ import {
 	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
 import type { PiEvent } from "./agent.ts";
+import { ACTIVITY_COMPACTING } from "./compaction.ts";
 import { completedToolCallActions } from "./tool-call-actions.ts";
 import { firstText, toolActivity, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
 
@@ -134,6 +135,14 @@ export class TurnMapper {
 				}
 				break;
 			}
+			case "compaction_start":
+				this.#setActivity(ACTIVITY_COMPACTING);
+				break;
+			case "compaction_end":
+				// A `/compact` turn ends with its own result, which clears the text. An automatic
+				// compaction ends and pi carries on with the run, unless it was aborted.
+				if (event.reason !== "manual" && !event.aborted) this.#setActivity(ACTIVITY_THINKING);
+				break;
 			case "tool_execution_end": {
 				this.#startTool(event.toolCallId, event.toolName);
 				this.#readyTool(event.toolCallId, event.toolName, undefined);

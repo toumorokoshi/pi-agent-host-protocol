@@ -1,6 +1,7 @@
 import type { JsonAgentSessionEvent, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { Logger } from "../core/logger.ts";
 import type { PiAgent, PiEvent, PiQueue, PromptInput } from "./agent.ts";
+import type { CompactResult } from "./compaction.ts";
 import { CANCELLED, notifyLevel, type PiDialogAnswer, type PiUiHandler, parseDialog } from "./dialogs.ts";
 import { RESUME_COMMAND, TRUNCATE_COMMAND } from "./extensions/ahp-resume.ts";
 import type { ThinkingLevel } from "./models.ts";
@@ -24,6 +25,8 @@ export interface RpcAgentOptions {
 	backgroundProcesses?: () => Promise<BackgroundProcess[]>;
 	/** Set when pi answers `clear_queue`: `pi --mode rpc` does, the bridge extension cannot. */
 	clearQueue?: boolean;
+	/** Set when pi answers `compact`: `pi --mode rpc` does, the bridge extension cannot. */
+	compact?: boolean;
 }
 
 /** Reads pi's state over `channel` and returns an agent for it. Closes the channel on failure. */
@@ -77,6 +80,7 @@ export class RpcAgent implements PiAgent {
 	#ui: PiUiHandler | undefined;
 	readonly backgroundProcesses: (() => Promise<BackgroundProcess[]>) | undefined;
 	readonly clearQueue: (() => Promise<PiQueue>) | undefined;
+	readonly compact: ((instructions: string | undefined) => Promise<CompactResult>) | undefined;
 
 	constructor(
 		child: RpcChannel,
@@ -88,6 +92,13 @@ export class RpcAgent implements PiAgent {
 		this.#child = child;
 		this.backgroundProcesses = options.backgroundProcesses;
 		this.clearQueue = options.clearQueue ? () => child.request<PiQueue>({ type: "clear_queue" }) : undefined;
+		this.compact = options.compact
+			? (instructions) =>
+					child.request<CompactResult>({
+						type: "compact",
+						customInstructions: instructions,
+					})
+			: undefined;
 		this.#capabilities = capabilities;
 		this.#logger = logger;
 		this.#model = state.model && { provider: state.model.provider, id: state.model.id };

@@ -31,6 +31,7 @@ import type { ArchiveStore } from "../host/archive-store.ts";
 import type { ImageInput, PiAgent, PiBackend, PiEvent, PiQueue, PromptInput } from "./agent.ts";
 import { ACT_ON_FEEDBACK_PROMPT, isActOnFeedback, referencedComments } from "./annotations.ts";
 import { backgroundWorkActions, backgroundWorkMeta } from "./background-work.ts";
+import { COMPACT_IN_TERMINAL, compactDoneText, compactInstructions, withCompactCommand } from "./compaction.ts";
 import {
 	referencedSkills,
 	skillBlocks,
@@ -125,16 +126,28 @@ interface OpenDialog {
 
 /**
  * What a run does: send a new user message, continue a turn that ended in a
- * resumable error, or start a run in which pi delivers the steering messages
- * still in its queue (the first opens the turn).
+ * resumable error, start a run in which pi delivers the steering messages
+ * still in its queue (the first opens the turn), or compact the context
+ * (`/compact`, which pi handles only in its terminal UI).
  */
-type RunKind = { kind: "prompt"; message: Message } | { kind: "resume" } | { kind: "steering" };
+type RunKind =
+	| { kind: "prompt"; message: Message }
+	| { kind: "resume" }
+	| { kind: "steering" }
+	| { kind: "compact"; instructions: string; message: Message };
 
 const RUN_STARTED: Record<RunKind["kind"], string> = {
 	prompt: "turn started",
 	resume: "turn resumed",
 	steering: "turn started for queued steering",
+	compact: "compact turn started",
 };
+
+/** The run for a user message that opens a turn: `/compact` compacts, anything else is a prompt. */
+function runOfMessage(message: Message): RunKind {
+	const instructions = compactInstructions(message.text);
+	return instructions === undefined ? { kind: "prompt", message } : { kind: "compact", instructions, message };
+}
 
 const TITLE_LENGTH = 80;
 const UNTITLED = "New session";
@@ -509,7 +522,10 @@ export class PiSession {
 			await this.#ensureAgent();
 			commands = await this.#commands;
 		}
-		return slashCompletions(commands ?? [], text, offset);
+		// The host's `/compact` is offered where it can run: not in a session a pi terminal drives.
+		const agent = await this.#agent?.catch(() => undefined);
+		const available = commands ?? [];
+		return slashCompletions(!agent || agent.compact ? withCompactCommand(available) : available, text, offset);
 	}
 
 	/** Returns a rejection reason for a client-dispatched chat action, or `undefined` to accept it. */
@@ -575,7 +591,7 @@ export class PiSession {
 		this.#touch();
 		switch (action.type) {
 			case ActionType.ChatTurnStarted:
-				this.#runTurn(action.turnId, { kind: "prompt", message: action.message });
+				this.#runTurn(action.turnId, runOfMessage(action.message));
 				break;
 			case ActionType.ChatTurnResume:
 				this.#runTurn(action.turnId, { kind: "resume" });
@@ -947,7 +963,7 @@ export class PiSession {
 				const truncationError = this.#truncationError;
 				this.#truncationError = undefined;
 				if (truncationError) throw new Error(`pi could not drop the edited turns: ${truncationError}`);
-				if (run.kind === "prompt") await this.#applyModel(agent, run.message);
+				if (run.kind === "prompt" || run.kind === "compact") await this.#applyModel(agent, run.message);
 				unsubscribe = agent.subscribe((event) => {
 					const user = userMessageStarted(event);
 					if (user !== undefined) {
@@ -968,7 +984,9 @@ export class PiSession {
 					attachments: run.kind === "prompt" ? run.message.attachments?.length : undefined,
 				});
 				this.#hostRun = true;
-				if (run.kind === "prompt") {
+				if (run.kind === "compact") {
+					await this.#compact(agent, turn, run.instructions);
+				} else if (run.kind === "prompt") {
 					const prompt = await this.#promptInput(run.message);
 					comments = prompt.comments;
 					await agent.prompt(prompt.input);
@@ -1012,6 +1030,29 @@ export class PiSession {
 		this.#touch();
 		this.#syncSummary();
 		this.#consumePending();
+	}
+
+	/**
+	 * Runs `/compact` in a turn of its own: pi compacts the context (it is
+	 * never asked while a run streams; runs are serialized) and the turn ends
+	 * with the token estimate before and after. A session a pi terminal
+	 * drives can only compact there, so the turn says so instead. pi's
+	 * errors (nothing to compact, cancelled) end the turn as errors, and a
+	 * client cancel aborts pi, which cancels the compaction.
+	 */
+	async #compact(agent: PiAgent, turn: ActiveTurn, instructions: string): Promise<void> {
+		if (!agent.compact) {
+			turn.mapper.notice(COMPACT_IN_TERMINAL);
+			return;
+		}
+		const result = await agent.compact(instructions || undefined);
+		this.#ctx.logger.debug("compaction finished", {
+			session: this.id,
+			turn: turn.id,
+			tokensBefore: result?.tokensBefore,
+			tokensAfter: result?.estimatedTokensAfter,
+		});
+		if (!turn.cancelledByClient) turn.mapper.notice(compactDoneText(result));
 	}
 
 	/**
@@ -1456,6 +1497,16 @@ export class PiSession {
 			this.#startPendingTurn(PendingMessageKind.Steering, chat.steeringMessage);
 			return;
 		}
+		if (
+			chat.steeringMessage &&
+			this.#turn &&
+			!this.#turn.cancelledByClient &&
+			!this.#turn.settled &&
+			runOfMessage(chat.steeringMessage.message).kind === "compact"
+		) {
+			this.#holdCompact(chat.steeringMessage);
+			return;
+		}
 		if (chat.steeringMessage && this.#turn && !this.#turn.cancelledByClient && !this.#turn.settled) {
 			const { id, message } = chat.steeringMessage;
 			this.#dispatchChat({ type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Steering, id });
@@ -1483,6 +1534,32 @@ export class PiSession {
 		this.#steerSends.add(send);
 	}
 
+	/**
+	 * A `/compact` sent as a steering message while the agent works. pi would
+	 * hand it to the model as text, and compacting would abort the run, so it
+	 * moves to the front of the chat's queue and runs as its own turn when
+	 * the current run ends.
+	 */
+	#holdCompact(steering: { id: string; message: Message }): void {
+		this.#dispatchChat({
+			type: ActionType.ChatPendingMessageRemoved,
+			kind: PendingMessageKind.Steering,
+			id: steering.id,
+		});
+		const id = `compact-${crypto.randomUUID()}`;
+		this.#dispatchChat({
+			type: ActionType.ChatPendingMessageSet,
+			kind: PendingMessageKind.Queued,
+			id,
+			message: steering.message,
+		});
+		const others = (this.#ctx.store.chat(this.id)?.queuedMessages ?? [])
+			.map((queued) => queued.id)
+			.filter((queued) => queued !== id);
+		this.#dispatchChat({ type: ActionType.ChatQueuedMessagesReordered, order: [id, ...others] });
+		this.#ctx.logger.debug("compaction held until the run ends", { session: this.id, message: steering.id });
+	}
+
 	/** Removes a pending message and runs it as a new turn. */
 	#startPendingTurn(kind: PendingMessageKind, pending: { id: string; message: Message }): void {
 		this.#dispatchChat({ type: ActionType.ChatPendingMessageRemoved, kind, id: pending.id });
@@ -1495,7 +1572,7 @@ export class PiSession {
 			message: pending.message,
 			...(kind === PendingMessageKind.Queued ? { queuedMessageId: pending.id } : {}),
 		});
-		this.#runTurn(turnId, { kind: "prompt", message: pending.message });
+		this.#runTurn(turnId, runOfMessage(pending.message));
 	}
 
 	#maybeSetTitle(text: string): void {

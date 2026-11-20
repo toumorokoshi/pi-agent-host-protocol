@@ -18,7 +18,7 @@ Known issues and features not yet implemented.
 - **pi extension dialogs** resolve with their defaults in embedded mode. See [Extension dialogs](#extension-dialogs) for rpc mode.
 - **File edits** are shown as text results, not file diffs.
 - **Not implemented:** changesets, MCP and automations. Annotations hold VS Code's review comments only; see [Review comments](#review-comments-annotations).
-- **Activity text is English only and based on tool names:** custom tools from extensions show `Running <tool>`. Retries and compaction have no activity text of their own.
+- **Activity text is English only and based on tool names:** custom tools from extensions show `Running <tool>`. Retries have no activity text of their own; automatic compaction shows "Compacting context".
 - **Read-only file access:** `resourceWrite` and the other write operations are refused.
 - **Moving a session's working directory (`session/workingDirectoryReplaced`):** not supported while a turn is in progress or while a live pi TUI drives the session through the bridge; generic `session/workingDirectorySet` and `session/workingDirectoryRemoved` are rejected because pi has a single `cwd`. See [specs/working-directory-move.md](specs/working-directory-move.md).
 
@@ -48,6 +48,17 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
 - **Session title of a running rpc session** is read from the session file only when the session is loaded. A rename made inside pi (for example by an extension) is not reflected until the host reloads the session.
 - **Agent directory not detected (rpc):** the host does not ask the `pi` executable which agent directory it uses. If the installed `pi` defaults to a different directory than `~/.pi/agent` (for example a build with `userConfigDir: ".av-pi"`), pass `--agent-dir`, or saved sessions vanish from the list after a restart.
 - **Version skew (rpc):** the host is tested against the pi bundled in `node_modules`. An installed `pi` with a different RPC protocol version is not detected.
+
+## `/compact`
+
+See [specs/compaction.md](specs/compaction.md).
+
+- **Not in pi terminal sessions:** the bridge's extension API can't wait for a compaction, so `/compact` from VS Code in a session a pi terminal drives only says to type it in the terminal.
+- **Only at the start:** `/compact` must be the whole message or its start; it isn't a completion chip that works mid-message.
+- **No summary shown:** the turn reports the token estimate, not pi's summary text, and reloaded history doesn't show compaction entries or the `/compact` turn (pi's file records neither a user message nor a size after). After a reload the context gauge shows the size before the compaction until the next model call; see [specs/usage.md](specs/usage.md).
+- **Cancel race:** a cancel that reaches pi while its `compact` is still stopping the previous run finds no compaction to abort yet; the compaction may finish although the turn shows as cancelled.
+- **Attachments on `/compact`:** dropped; only the instructions text is used.
+- **Not yet tried in a real VS Code window**, only against the test client and a throwaway host running Bolt.
 
 ## Subagent chats
 

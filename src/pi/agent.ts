@@ -8,6 +8,7 @@ import type {
 	SessionManager,
 	SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
+import type { CompactResult } from "./compaction.ts";
 import type { PiUiHandler } from "./dialogs.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
@@ -91,6 +92,14 @@ export interface PiAgent {
 	 * the bridge, whose extension API has no such call).
 	 */
 	readonly clearQueue?: () => Promise<PiQueue>;
+	/**
+	 * Compacts the session's context, as pi's `/compact` does, with optional
+	 * instructions for the summary. pi aborts a running run first. Resolves
+	 * with pi's result; rejects with pi's error (nothing to compact, cancelled).
+	 * Unset on agents that cannot (a pi terminal through the bridge, whose
+	 * extension API only starts compaction without waiting for it).
+	 */
+	readonly compact?: (instructions: string | undefined) => Promise<CompactResult>;
 	abort(): Promise<void>;
 	/** Selects a model by provider and id. Rejects if pi does not know it. */
 	setModel(provider: string, id: string): Promise<void>;

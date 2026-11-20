@@ -17,6 +17,7 @@ import {
 	type PiQueue,
 	type PromptInput,
 } from "./agent.ts";
+import type { CompactResult } from "./compaction.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 import { moveSessionManager as relocateSessionManager } from "./session-move.ts";
 import { truncationTarget } from "./truncation.ts";
@@ -161,6 +162,8 @@ class EmbeddedAgent implements PiAgent {
 	}
 
 	readonly clearQueue = async (): Promise<PiQueue> => this.#session.clearQueue();
+
+	readonly compact = (instructions: string | undefined): Promise<CompactResult> => this.#session.compact(instructions);
 
 	abort(): Promise<void> {
 		return this.#session.abort();

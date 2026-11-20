@@ -71,6 +71,14 @@ export class FakePi {
 	 */
 	holdSteers = false;
 	readonly #heldSteers: RpcRecord[] = [];
+	/**
+	 * How pi answers `compact`: a result, or an error message. Unset leaves the
+	 * command unanswered until the test calls `finishCompact` (or pi is aborted).
+	 */
+	compactWith: { result: unknown } | { error: string } | undefined = {
+		result: { tokensBefore: 12_000, estimatedTokensAfter: 3_000 },
+	};
+	#pendingCompact: RpcRecord | undefined;
 
 	constructor(channel: RpcChannel) {
 		this.channel = channel;
@@ -106,6 +114,14 @@ export class FakePi {
 		this.channel.respond(command, {});
 	}
 
+	/** Answers a `compact` the test held back (`compactWith` unset). */
+	finishCompact(answer: { result: unknown } | { error: string }): void {
+		const command = this.#pendingCompact;
+		this.#pendingCompact = undefined;
+		if (!command) throw new Error("no compact is pending");
+		this.channel.respond(command, "error" in answer ? { error: answer.error } : { data: answer.result });
+	}
+
 	#queueUpdate(): void {
 		this.channel.send({ type: "queue_update", steering: [...this.steering], followUp: [...this.followUp] });
 	}
@@ -115,6 +131,9 @@ export class FakePi {
 		switch (command.type) {
 			case "get_state":
 				this.channel.respond(command, { data: { model: { provider: "faux", id: "faux-1" }, isStreaming: false } });
+				break;
+			case "set_model":
+				this.channel.respond(command, { data: { provider: command.provider, id: command.modelId } });
 				break;
 			case "get_commands":
 				this.channel.respond(command, { data: { commands: [{ name: "ahp-resume" }] } });
@@ -137,6 +156,21 @@ export class FakePi {
 				this.channel.respond(command, { data });
 				break;
 			}
+			case "compact":
+				if (this.compactWith === undefined) {
+					this.#pendingCompact = command;
+					break;
+				}
+				this.channel.respond(
+					command,
+					"error" in this.compactWith ? { error: this.compactWith.error } : { data: this.compactWith.result },
+				);
+				break;
+			case "abort":
+				// pi's abort cancels a manual compaction, which then fails.
+				if (this.#pendingCompact) this.finishCompact({ error: "Compaction cancelled" });
+				this.channel.respond(command, {});
+				break;
 			case "extension_ui_response":
 				break;
 			default:
@@ -151,11 +185,13 @@ export class FakeBackend implements PiBackend {
 	readonly pis: FakePi[] = [];
 	readonly #dir: string;
 	readonly #clearQueue: boolean;
+	readonly #compact: boolean;
 
-	/** `clearQueue` makes the agents answer `clear_queue`, as `pi --mode rpc` does. */
-	constructor(dir: string, options: { clearQueue?: boolean } = {}) {
+	/** `clearQueue` and `compact` make the agents answer `clear_queue` and `compact`, as `pi --mode rpc` does. */
+	constructor(dir: string, options: { clearQueue?: boolean; compact?: boolean } = {}) {
 		this.#dir = dir;
 		this.#clearQueue = options.clearQueue ?? false;
+		this.#compact = options.compact ?? false;
 	}
 
 	async models() {
@@ -189,7 +225,7 @@ export class FakeBackend implements PiBackend {
 	async startAgent(): Promise<PiAgent> {
 		const [host, pi] = channelPair();
 		this.pis.push(new FakePi(pi));
-		return connectRpcAgent(host, silentLogger, { clearQueue: this.#clearQueue });
+		return connectRpcAgent(host, silentLogger, { clearQueue: this.#clearQueue, compact: this.#compact });
 	}
 
 	async dispose(): Promise<void> {}
