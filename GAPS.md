@@ -61,6 +61,15 @@ See [specs/compaction.md](specs/compaction.md).
 - **Not yet tried in a real VS Code window**, only against the test client and a throwaway host running Bolt.
 
 
+## Session projects
+
+See [specs/projects.md](specs/projects.md).
+
+- **VS Code grouping:** that a project's `uri` need not be a repository relies on VS Code's grouping behavior, which is not part of the protocol.
+- **Synchronous lookup:** an uncached directory costs a few `existsSync` calls on the event loop; results are cached for a minute (at most 1,000 directories).
+- **Layout-specific rules:** `~/workspaces/<ws>` and CFS workspaces are recognized by path; other layouts are named by their git repository (`<parent>/<repo>`) or path.
+- **Not yet tried in a real VS Code window**, only against VS Code's source and the test client.
+
 ## Context size and `/context`
 
 See [specs/context-limit.md](specs/context-limit.md).

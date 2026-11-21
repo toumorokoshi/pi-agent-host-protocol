@@ -212,6 +212,16 @@ export class StateStore {
 		if (state && state.status !== status) this.#sessions.set(id, { ...state, status });
 	}
 
+	/**
+	 * Sets the session state's project outside the action stream: the session reducer's
+	 * `session/workingDirectoryReplaced` only rewrites `workingDirectories`, so when a session
+	 * moves its project is updated here and in the summary.
+	 */
+	setSessionProject(id: string, project: SessionState["project"]): void {
+		const state = this.#sessions.get(id);
+		if (state && state.project?.uri !== project?.uri) this.#sessions.set(id, { ...state, project });
+	}
+
 	setChatTitle(id: string, title: string): void {
 		const state = this.#chats.get(id);
 		if (state && state.title !== title) this.#chats.set(id, { ...state, title });

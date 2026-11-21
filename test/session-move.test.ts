@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ActionType, ChatOriginKind, type ListSessionsResult, TurnState } from "@microsoft/agent-host-protocol";
+import { projectOf } from "../src/pi/projects.ts";
 import { moveSessionManager, rewriteSessionHeaderCwd } from "../src/pi/session-move.ts";
 import { newSession, PI_MODES, startHost, startTurn, TestClient, type TestHost } from "./helpers.ts";
 
@@ -173,6 +174,19 @@ for (const mode of PI_MODES) {
 			]);
 
 			assert.deepEqual(client.sessions.get(session)?.workingDirectories, [newUri]);
+
+			// The project follows the move, in the summary and in the session state a new subscriber gets.
+			const expectedProject = projectOf(secondDir);
+			assert.notDeepEqual(expectedProject, projectOf(host.cwd));
+			assert.deepEqual((notice.params?.changes as { project?: unknown } | undefined)?.project, expectedProject);
+			const late = await TestClient.connect(host.url);
+			try {
+				await late.initialize();
+				await late.subscribe(session);
+				assert.deepEqual(late.sessions.get(session)?.project, expectedProject);
+			} finally {
+				late.close();
+			}
 
 			const listed = (await client.request("listSessions", { channel: "ahp-root://" })) as ListSessionsResult;
 			const item = listed.items.find((s) => s.resource === session);

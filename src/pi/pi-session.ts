@@ -75,6 +75,7 @@ import { CONTINUED, turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
+import { projectOf } from "./projects.ts";
 import { loadSubagentRuns, type RestoredRun, SubagentTracker } from "./subagent-tracker.ts";
 import { isSubagentRunner, subagentWorkActions } from "./subagents.ts";
 import { recordedUserTurns } from "./truncation.ts";
@@ -580,6 +581,7 @@ export class PiSession {
 			createdAt: this.createdAt,
 			modifiedAt: chat?.modifiedAt ?? this.createdAt,
 			workingDirectories: this.#ctx.store.session(this.id)?.workingDirectories ?? [fileUri(this.cwd)],
+			project: projectOf(this.cwd),
 			...(session?.chats ? { chats: session.chats } : {}),
 			...(session?.annotations ? { annotations: session.annotations } : {}),
 			...(chat?.activity ? { activity: chat.activity } : {}),
@@ -741,11 +743,15 @@ export class PiSession {
 				this.#ctx.archive.setArchived(this.id, action.isArchived);
 				this.#syncSummary();
 				break;
-			case ActionType.SessionWorkingDirectoryReplaced:
+			case ActionType.SessionWorkingDirectoryReplaced: {
+				const project = projectOf(this.cwd);
+				this.#ctx.store.setSessionProject(this.id, project);
 				this.#ctx.summaryChanged(this.id, {
 					workingDirectories: this.#ctx.store.session(this.id)?.workingDirectories ?? [fileUri(this.cwd)],
+					project,
 				});
 				break;
+			}
 			default:
 				break;
 		}
@@ -1855,6 +1861,7 @@ export class PiSession {
 			title,
 			status,
 			workingDirectories: [fileUri(this.cwd)],
+			project: projectOf(this.cwd),
 			lifecycle,
 			activeClients: [],
 			chats: [this.#chatSummary(title, status, this.createdAt)],

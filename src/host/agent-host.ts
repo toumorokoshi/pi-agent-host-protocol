@@ -60,6 +60,7 @@ import {
 	type SessionHostContext,
 	type SessionSummaryChanges,
 } from "../pi/pi-session.ts";
+import { projectOf } from "../pi/projects.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
 import { PiStartError } from "../pi/rpc-process.ts";
@@ -1079,6 +1080,7 @@ function catalogSummary(
 		createdAt: info.created.toISOString(),
 		modifiedAt: info.modified.toISOString(),
 		workingDirectories: [fileUri(info.cwd)],
+		project: projectOf(info.cwd),
 		chats: [{ resource: chatUri(info.id, scheme), title, status }, ...forkedChats],
 		annotations,
 	};
