@@ -8,6 +8,7 @@ import { after, before, describe, test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { silentLogger } from "../src/core/logger.ts";
 import { BridgeServer, HostAlreadyRunningError } from "../src/host/bridges.ts";
+import { CONTEXT_IN_TERMINAL } from "../src/pi/context-limit.ts";
 import { FakeBridge, runEvents } from "./fake-pi.ts";
 import { newSession, startHost, startTurn, TestClient, type TestHost, vscodeChatUri } from "./helpers.ts";
 
@@ -69,6 +70,22 @@ describe("live TUI sessions over the bridge socket", () => {
 		assert.ok(bridge.commands.some((command) => command.type === "prompt" && command.message === "From VS Code"));
 		const turn = client.chats.get(chat)!.turns.at(-1)!;
 		assert.equal(turn.responseParts.find((part) => part.kind === "markdown")?.content, "Reply in the TUI");
+		await bridge.close();
+	});
+
+	test("/context in a session a pi terminal drives says to type it there", async () => {
+		const bridge = await FakeBridge.connect(host.socketPath!);
+		const sessionId = crypto.randomUUID();
+		await bridge.attach({ sessionId, cwd: host.cwd });
+		const chat = vscodeChatUri(`pi:/${sessionId}`);
+		await client.waitFor((m) => m.method === "root/sessionAdded" && m.params.summary.resource === `pi:/${sessionId}`);
+		await client.subscribe(chat);
+		const turnId = startTurn(client, chat, "/context 300k");
+		await client.waitFor((m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turnId);
+		const parts = client.chats.get(chat)!.turns.find((t) => t.id === turnId)!.responseParts;
+		assert.ok(parts.some((part) => part.kind === "markdown" && part.content.trim() === CONTEXT_IN_TERMINAL));
+		assert.equal(bridge.commands.filter((command) => command.type === "set_context_limit").length, 0);
+		assert.equal(bridge.commands.filter((command) => command.type === "prompt").length, 0);
 		await bridge.close();
 	});
 

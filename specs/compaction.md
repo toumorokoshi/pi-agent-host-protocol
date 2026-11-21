@@ -31,5 +31,9 @@ pi's RPC protocol has the operation: `{ type: "compact", customInstructions? }` 
 
 `test/compaction.test.ts`:
 - `compactInstructions`, `compactDoneText`, the completion item, and the automatic-compaction activity.
-- With a scripted pi (`FakePi`): `/compact` sends `compact` and no prompt (after `set_model` when the message picked a model) and ends the turn with the estimate; instructions are passed; pi's error ends the turn as an error; cancelling aborts pi and the session takes new turns; a `/compact` steer during a run is never sent to pi, waits in the queue, and compacts after the run ends; an agent without `compact` (a pi terminal) gets the terminal notice and no `/compact` completion; manual and aborted compaction events leave the activity alone.
+- With a scripted pi (`FakePi`): `/compact` sends `compact` and no prompt (after `set_model` when the message picked a model) and ends the turn with the estimate; instructions are passed; pi's error ends the turn as an error; cancelling aborts pi and the session takes new turns; a `/compact` steer during a run is never sent to pi (a `/context` steer is held the same way, see [context-limit.md](context-limit.md)), waits in the queue, and compacts after the run ends; an agent without `compact` (a pi terminal) gets the terminal notice and no `/compact` completion; manual and aborted compaction events leave the activity alone.
 - Against pi's real CLI (`rpc`) and SDK (`embedded`): the command reaches pi, and a fresh session's "Nothing to compact" ends the turn as an error.
+
+## See also
+
+- [specs/context-limit.md](context-limit.md): the picker's Context Size and `/context`, which set the window Bolt compacts against.

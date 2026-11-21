@@ -52,7 +52,7 @@ import {
 import { forkTitle } from "../pi/forks.ts";
 import { sweepInterval } from "../pi/idle.ts";
 import { ModelCatalog } from "../pi/model-catalog.ts";
-import { toSessionModelInfo } from "../pi/models.ts";
+import { modelSelectionId, toSessionModelInfo } from "../pi/models.ts";
 import {
 	type ChatBinding,
 	PiSession,
@@ -235,7 +235,11 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		);
 		this.#modelCatalog = new ModelCatalog({
 			load: () => this.backend.models(),
-			publish: (models) => this.#updateAgent({ models: models.map(toSessionModelInfo) }),
+			publish: (models) => {
+				this.#updateAgent({ models: models.map(toSessionModelInfo) });
+				// The gauge's window comes from the model list, which can arrive after sessions load.
+				for (const session of this.#sessions.values()) session.refreshContextUsage();
+			},
 			logger: this.logger,
 			retryDelays: options.modelRetryDelaysMs,
 			refreshIntervalMs: options.modelRefreshIntervalMs,
@@ -274,6 +278,18 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		const [listing, customizations] = await Promise.all([this.#modelCatalog.refresh(), this.#agentCustomizations()]);
 		if (customizations) this.#updateAgent({ customizations });
 		if (listing.kind === "failed" && listing.error instanceof PiStartError) throw listing.error;
+	}
+
+	/**
+	 * The context window of a published model (`provider/id`, or pi's model id as a turn's usage
+	 * names it), if known. A bare id several providers publish with different windows is unknown.
+	 */
+	modelWindow(modelId: string): number | undefined {
+		const models = this.#modelCatalog.models;
+		const exact = models.find((model) => modelSelectionId(model) === modelId);
+		if (exact) return exact.contextWindow;
+		const windows = new Set(models.filter((model) => model.id === modelId).map((model) => model.contextWindow));
+		return windows.size === 1 ? [...windows][0] : undefined;
 	}
 
 	/** Merges `changes` into the agent's root state and publishes it when anything changed. */

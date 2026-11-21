@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { SessionEntry, SessionManager, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import {
 	type ActionOrigin,
@@ -14,6 +15,7 @@ import {
 	type Message,
 	MessageAttachmentKind,
 	MessageKind,
+	type ModelSelection,
 	PendingMessageKind,
 	ResponsePartKind,
 	SessionLifecycle,
@@ -32,6 +34,23 @@ import type { ImageInput, PiAgent, PiBackend, PiEvent, PiQueue, PromptInput } fr
 import { ACT_ON_FEEDBACK_PROMPT, isActOnFeedback, referencedComments } from "./annotations.ts";
 import { backgroundWorkActions, backgroundWorkMeta } from "./background-work.ts";
 import { COMPACT_IN_TERMINAL, compactDoneText, compactInstructions, withCompactCommand } from "./compaction.ts";
+import {
+	CONTEXT_IN_TERMINAL,
+	CONTEXT_UNSUPPORTED,
+	CONTEXT_USAGE_META,
+	type ContextCommand,
+	contextCommand,
+	contextLimitOf,
+	contextText,
+	contextUsageMeta,
+	contextUsageText,
+	effectiveWindow,
+	isUnknownCommandError,
+	pickerChange,
+	restoredContextLimit,
+	restoredModel,
+	withContextCommand,
+} from "./context-limit.ts";
 import {
 	referencedSkills,
 	skillBlocks,
@@ -86,6 +105,8 @@ export interface SessionHostContext {
 	activityChanged(): void;
 	/** The current time in ms (replaced in tests). */
 	now(): number;
+	/** The context window of a model in the published list (`provider/id`), if known. */
+	modelWindow(modelId: string): number | undefined;
 }
 
 /**
@@ -134,19 +155,29 @@ type RunKind =
 	| { kind: "prompt"; message: Message }
 	| { kind: "resume" }
 	| { kind: "steering" }
-	| { kind: "compact"; instructions: string; message: Message };
+	| { kind: "compact"; instructions: string; message: Message }
+	| { kind: "context"; command: ContextCommand };
 
 const RUN_STARTED: Record<RunKind["kind"], string> = {
 	prompt: "turn started",
 	resume: "turn resumed",
 	steering: "turn started for queued steering",
 	compact: "compact turn started",
+	context: "context command",
 };
 
-/** The run for a user message that opens a turn: `/compact` compacts, anything else is a prompt. */
+/** The run for a user message that opens a turn: `/compact` and `/context` run on the host, anything else is a prompt. */
 function runOfMessage(message: Message): RunKind {
 	const instructions = compactInstructions(message.text);
-	return instructions === undefined ? { kind: "prompt", message } : { kind: "compact", instructions, message };
+	if (instructions !== undefined) return { kind: "compact", instructions, message };
+	const command = contextCommand(message.text);
+	return command ? { kind: "context", command } : { kind: "prompt", message };
+}
+
+/** True for a message the host runs itself (`/compact`, `/context`), which pi must never get as text. */
+function isHostCommand(message: Message): boolean {
+	const { kind } = runOfMessage(message);
+	return kind === "compact" || kind === "context";
 }
 
 const TITLE_LENGTH = 80;
@@ -226,6 +257,21 @@ export class PiSession {
 	#hasTurns: boolean;
 	/** When a client or pi last used the session, for stopping idle pi processes. */
 	#lastActivity: number;
+	/** The context limit pi accepted from the host (null: none), or undefined before it took any. */
+	#contextLimit: number | null | undefined;
+	/**
+	 * The picker's Context Size on the last message pi took it from (null: the full window), or
+	 * undefined before the first. Only a change of the picker is applied, so a limit set with
+	 * `/context` stays until the user picks another size. A pick pi didn't take (a failed request,
+	 * a pi terminal, a pi without context limits) isn't recorded, so it is tried again.
+	 */
+	#pickedContextLimit: number | null | undefined;
+	/** Set when this pi answered `set_context_limit` with "Unknown command"; cleared when the pi is replaced. */
+	#contextLimitUnsupported = false;
+	/** The context limit in the session file when it was loaded, or the host set on a pi since replaced: the gauge's until the host sets one. */
+	#restoredContextLimit: number | null | undefined;
+	/** The model (`provider/id`) the session uses, as far as the host knows: the last selection, or the session file's. */
+	#modelId: string | undefined;
 
 	private constructor(
 		ctx: SessionHostContext,
@@ -425,6 +471,8 @@ export class PiSession {
 				? new Date(Date.parse(lastTurn.startedAt) + lastTurn.duration).toISOString()
 				: createdAt;
 		session.#hasTurns = turns.length > 0;
+		session.#restoredContextLimit = restoredContextLimit(entries);
+		session.#modelId = restoredModel(entries);
 		if (binding.kind === "fork") {
 			const chat = { ...session.#chatSummary(title, restoredStatus(false), modifiedAt), turns };
 			ctx.store.addForkedChat({ kind: "chat", sessionId: binding.session, chatId: id }, binding.chat, chat);
@@ -438,6 +486,7 @@ export class PiSession {
 			ctx.annotations.annotationsOf(id),
 		);
 		session.#subagents.publish();
+		session.refreshContextUsage();
 		return session;
 	}
 
@@ -453,6 +502,34 @@ export class PiSession {
 			(part) => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === toolCallId,
 		);
 		return holds ? turn?.id : undefined;
+	}
+
+	/**
+	 * Publishes the session's context for VS Code's gauge (`copilot.usageInfo` in the session's
+	 * `_meta`): the last reported context tokens against the window pi works with, the model's
+	 * lowered to the session's limit. Called when usage, the model, the limit or the model list
+	 * changes. Only a session's default chat publishes it, since `_meta` is per session.
+	 */
+	refreshContextUsage(): void {
+		if (this.isFork) return;
+		const session = this.#ctx.store.session(this.id);
+		if (!session) return;
+		const chat = this.#ctx.store.chat(this.id);
+		// A turn without a model call (`/context`) reports no usage; the context is the last one that did.
+		const usage = chat?.activeTurn?.usage ?? chat?.turns.findLast((turn) => turn.usage)?.usage;
+		const limit = this.#contextLimit !== undefined ? this.#contextLimit : this.#restoredContextLimit;
+		const model = this.#modelId ?? usage?.model;
+		const value = contextUsageMeta(
+			usage?.inputTokens,
+			effectiveWindow(model ? this.#ctx.modelWindow(model) : undefined, limit),
+		);
+		const { [CONTEXT_USAGE_META]: current, ...rest } = session._meta ?? {};
+		if (isDeepStrictEqual(current, value)) return;
+		const meta = value ? { ...rest, [CONTEXT_USAGE_META]: value } : rest;
+		this.#dispatchSession({
+			type: ActionType.SessionMetaChanged,
+			_meta: Object.keys(meta).length > 0 ? meta : undefined,
+		});
 	}
 
 	/** True if `chatId` is one of the read-only subagent chats this chat started. */
@@ -522,10 +599,12 @@ export class PiSession {
 			await this.#ensureAgent();
 			commands = await this.#commands;
 		}
-		// The host's `/compact` is offered where it can run: not in a session a pi terminal drives.
+		// Host commands are offered where they can run: not in a session a pi terminal drives.
 		const agent = await this.#agent?.catch(() => undefined);
-		const available = commands ?? [];
-		return slashCompletions(!agent || agent.compact ? withCompactCommand(available) : available, text, offset);
+		let available = commands ?? [];
+		if (!agent || agent.compact) available = withCompactCommand(available);
+		if (!agent || agent.setContextLimit) available = withContextCommand(available);
+		return slashCompletions(available, text, offset);
 	}
 
 	/** Returns a rejection reason for a client-dispatched chat action, or `undefined` to accept it. */
@@ -707,6 +786,7 @@ export class PiSession {
 		const previous = this.#agent;
 		this.#agent = Promise.resolve(this.#observe(agent));
 		this.#tuiAgent = agent;
+		this.#contextLimitAgentReplaced();
 		if (!previous) return;
 		const lastRun = this.#lastRun;
 		void previous
@@ -893,8 +973,14 @@ export class PiSession {
 				agent.setUiHandler?.(this.#ui);
 				return this.#observe(agent);
 			});
+		const startReplacement = () => {
+			this.#contextLimitAgentReplaced();
+			return start();
+		};
 		const previous = this.#agent;
-		const agent = previous ? previous.then((current) => (current.closed ? start() : current)) : start();
+		const agent = previous
+			? previous.then((current) => (current.closed ? startReplacement() : current))
+			: startReplacement();
 		this.#agent = agent;
 		agent.catch(() => {
 			if (this.#agent === agent) this.#agent = undefined;
@@ -986,6 +1072,8 @@ export class PiSession {
 				this.#hostRun = true;
 				if (run.kind === "compact") {
 					await this.#compact(agent, turn, run.instructions);
+				} else if (run.kind === "context") {
+					await this.#context(agent, turn, run.command);
 				} else if (run.kind === "prompt") {
 					const prompt = await this.#promptInput(run.message);
 					comments = prompt.comments;
@@ -1056,6 +1144,64 @@ export class PiSession {
 			turn.mapper.notice(compactDoneText(result));
 			if (result?.estimatedTokensAfter !== undefined) turn.mapper.compacted(result.estimatedTokensAfter);
 		}
+	}
+
+	/**
+	 * Runs `/context` in a turn of its own: shows the session's context usage and limit, or sets
+	 * or clears the limit first. The turn ends with pi's report. A session a pi terminal drives
+	 * says to type it there; a pi without context limits says so.
+	 */
+	async #context(agent: PiAgent, turn: ActiveTurn, command: ContextCommand): Promise<void> {
+		if (command.kind === "invalid") {
+			turn.mapper.notice(contextUsageText(command.argument));
+			return;
+		}
+		if (!agent.setContextLimit || !agent.contextState) {
+			turn.mapper.notice(agent === this.#tuiAgent ? CONTEXT_IN_TERMINAL : CONTEXT_UNSUPPORTED);
+			return;
+		}
+		if (command.kind === "set") {
+			if (!(await this.#setContextLimit(agent, command.limit))) {
+				turn.mapper.notice(CONTEXT_UNSUPPORTED);
+				return;
+			}
+			this.refreshContextUsage();
+		}
+		const report = await agent.contextState();
+		this.#ctx.logger.debug("context limit", { session: this.id, turn: turn.id, limit: report.limit ?? undefined });
+		if (!turn.cancelledByClient) turn.mapper.notice(contextText(report));
+	}
+
+	/**
+	 * Sends the limit to pi and remembers it as pi's only once pi took it. Returns false, and
+	 * remembers that this pi can't, when pi has no `set_context_limit`; any other failure is thrown.
+	 */
+	async #setContextLimit(agent: PiAgent, limit: number | null): Promise<boolean> {
+		if (!agent.setContextLimit || this.#contextLimitUnsupported) return false;
+		try {
+			await agent.setContextLimit(limit);
+		} catch (error) {
+			if (!isUnknownCommandError(error)) throw error;
+			this.#contextLimitUnsupported = true;
+			return false;
+		}
+		this.#contextLimit = limit;
+		this.#ctx.logger.debug("context limit", { session: this.id, limit: limit ?? undefined });
+		return true;
+	}
+
+	/**
+	 * A different pi now serves the session (started after one stopped or exited, or handed to or
+	 * from a terminal, which can change the limit). What the host knew about the old pi is
+	 * dropped, so the next message applies the picker's size again and a pi that couldn't set a
+	 * limit may be a newer one. The gauge keeps the last limit the host set, as pi restores it
+	 * from the session file.
+	 */
+	#contextLimitAgentReplaced(): void {
+		if (this.#contextLimit !== undefined) this.#restoredContextLimit = this.#contextLimit;
+		this.#contextLimit = undefined;
+		this.#pickedContextLimit = undefined;
+		this.#contextLimitUnsupported = false;
 	}
 
 	/**
@@ -1483,8 +1629,34 @@ export class PiSession {
 		const model = parseModelSelection(selection);
 		if (!model) throw new Error(`Unknown model: ${selection.id}`);
 		await agent.setModel(model.provider, model.id);
+		this.#modelId = selection.id;
 		const level = thinkingLevelOf(selection);
 		if (level) await agent.setThinkingLevel(level);
+		await this.#applyContextSize(agent, selection);
+		this.refreshContextUsage();
+	}
+
+	/**
+	 * Applies the picker's Context Size when the user changed it (see `pickerChange`). VS Code sends
+	 * the picker's value with every message and the host can't move the picker, so applying it
+	 * every time would undo `/context` on the next turn. Nothing is recorded until pi took the
+	 * limit, so a failed request is tried again with the next message. A pi without context
+	 * limits gets one note for the session (until the pi is replaced), and the gauge keeps the
+	 * model's window.
+	 */
+	async #applyContextSize(agent: PiAgent, selection: ModelSelection): Promise<void> {
+		if (!agent.setContextLimit || this.#contextLimitUnsupported) return;
+		const picked = contextLimitOf(selection, this.#ctx.modelWindow(selection.id));
+		const limit = pickerChange(this.#pickedContextLimit, picked);
+		if (limit === undefined) {
+			this.#pickedContextLimit = picked;
+			return;
+		}
+		if (limit !== this.#contextLimit && !(await this.#setContextLimit(agent, limit))) {
+			this.#turn?.mapper.notice(CONTEXT_UNSUPPORTED);
+			return;
+		}
+		this.#pickedContextLimit = picked;
 	}
 
 	/**
@@ -1505,9 +1677,9 @@ export class PiSession {
 			this.#turn &&
 			!this.#turn.cancelledByClient &&
 			!this.#turn.settled &&
-			runOfMessage(chat.steeringMessage.message).kind === "compact"
+			isHostCommand(chat.steeringMessage.message)
 		) {
-			this.#holdCompact(chat.steeringMessage);
+			this.#holdHostCommand(chat.steeringMessage);
 			return;
 		}
 		if (chat.steeringMessage && this.#turn && !this.#turn.cancelledByClient && !this.#turn.settled) {
@@ -1538,18 +1710,17 @@ export class PiSession {
 	}
 
 	/**
-	 * A `/compact` sent as a steering message while the agent works. pi would
-	 * hand it to the model as text, and compacting would abort the run, so it
-	 * moves to the front of the chat's queue and runs as its own turn when
-	 * the current run ends.
+	 * A `/compact` or `/context` sent as a steering message while the agent works. pi would
+	 * hand it to the model as text (and compacting would abort the run), so it moves to the
+	 * front of the chat's queue and runs as its own turn when the current run ends.
 	 */
-	#holdCompact(steering: { id: string; message: Message }): void {
+	#holdHostCommand(steering: { id: string; message: Message }): void {
 		this.#dispatchChat({
 			type: ActionType.ChatPendingMessageRemoved,
 			kind: PendingMessageKind.Steering,
 			id: steering.id,
 		});
-		const id = `compact-${crypto.randomUUID()}`;
+		const id = `host-command-${crypto.randomUUID()}`;
 		this.#dispatchChat({
 			type: ActionType.ChatPendingMessageSet,
 			kind: PendingMessageKind.Queued,
@@ -1560,7 +1731,7 @@ export class PiSession {
 			.map((queued) => queued.id)
 			.filter((queued) => queued !== id);
 		this.#dispatchChat({ type: ActionType.ChatQueuedMessagesReordered, order: [id, ...others] });
-		this.#ctx.logger.debug("compaction held until the run ends", { session: this.id, message: steering.id });
+		this.#ctx.logger.debug("host command held until the run ends", { session: this.id, message: steering.id });
 	}
 
 	/** Removes a pending message and runs it as a new turn. */
@@ -1657,6 +1828,7 @@ export class PiSession {
 	#dispatchChat(action: ChatAction): void {
 		this.#ctx.store.dispatch(this.chat, action);
 		if (action.type === ActionType.ChatActivityChanged) this.#syncActivity();
+		if (action.type === ActionType.ChatUsage) this.refreshContextUsage();
 	}
 
 	#dispatchSession(action: StateAction, origin?: ActionOrigin): void {

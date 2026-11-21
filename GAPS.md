@@ -60,6 +60,18 @@ See [specs/compaction.md](specs/compaction.md).
 - **Attachments on `/compact`:** dropped; only the instructions text is used.
 - **Not yet tried in a real VS Code window**, only against the test client and a throwaway host running Bolt.
 
+
+## Context size and `/context`
+
+See [specs/context-limit.md](specs/context-limit.md).
+
+- **Needs Bolt with `set_context_limit`:** stock pi and older Bolt releases ignore the picker's Context Size (one note until the pi is replaced; support is found out on first use rather than probed) and `/context` says so.
+- **The picker doesn't follow `/context`:** VS Code reads a host's current model settings only from the session-config channel (`vscode.modelConfiguration` in `session.config`), which this host doesn't implement. `/context` changes the limit until the picker is changed; the picker keeps showing the last size picked. Implementing session config would let the host move it. The context gauge does follow it (the host reports the window in `copilot.usageInfo`).
+- **Gauge in a forked chat:** the host-reported window lives in the session's `_meta`, so a forked chat's gauge shows the default chat's context.
+- **Gauge after a model switch until the next message:** the window follows the model a message selected; switching the picker alone changes nothing until a message is sent.
+- **Not in pi terminal sessions:** the bridge can't set the limit; `/context` says to type it in the terminal.
+- **Tried in a real VS Code window** (2026-11-21): the picker shows 200K/300K/500K/full next to Thinking and applies the pick; `/context` sets, shows and clears the limit.
+
 ## Subagent chats
 
 See [specs/subagents.md](specs/subagents.md).

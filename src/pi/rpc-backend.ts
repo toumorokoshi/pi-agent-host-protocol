@@ -97,6 +97,7 @@ export class RpcBackend implements PiBackend {
 			backgroundProcesses: async () => (await background.promise)(),
 			clearQueue: true,
 			compact: true,
+			contextLimit: true,
 		});
 		background.resolve(pid === undefined ? async () => [] : await this.#backgroundProcesses(pid));
 		this.#agents.add(agent);

@@ -1,5 +1,6 @@
-import type { ModelSelection, SessionModelInfo } from "@microsoft/agent-host-protocol";
+import type { ConfigPropertySchema, ModelSelection, SessionModelInfo } from "@microsoft/agent-host-protocol";
 import { PROVIDER } from "../core/uris.ts";
+import { CONTEXT_SIZE_KEY, contextSizeProperty } from "./context-limit.ts";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -22,6 +23,20 @@ export function modelSelectionId(model: { provider: string; id: string }): strin
 
 export function toSessionModelInfo(model: PiModel): SessionModelInfo {
 	const supportsImages = model.input?.includes("image") ?? false;
+	const properties: Record<string, ConfigPropertySchema> = {
+		...(model.reasoning
+			? {
+					thinkingLevel: {
+						type: "string",
+						title: "Thinking",
+						enum: [...THINKING_LEVELS],
+						default: "medium",
+					},
+				}
+			: {}),
+	};
+	const contextSize = contextSizeProperty(model.contextWindow);
+	if (contextSize) properties[CONTEXT_SIZE_KEY] = contextSize;
 	return {
 		id: modelSelectionId(model),
 		provider: PROVIDER,
@@ -29,21 +44,7 @@ export function toSessionModelInfo(model: PiModel): SessionModelInfo {
 		maxContextWindow: model.contextWindow,
 		maxOutputTokens: model.maxTokens,
 		supportsVision: supportsImages,
-		...(model.reasoning
-			? {
-					configSchema: {
-						type: "object",
-						properties: {
-							thinkingLevel: {
-								type: "string",
-								title: "Thinking",
-								enum: [...THINKING_LEVELS],
-								default: "medium",
-							},
-						},
-					},
-				}
-			: {}),
+		...(Object.keys(properties).length > 0 ? { configSchema: { type: "object", properties } } : {}),
 	};
 }
 

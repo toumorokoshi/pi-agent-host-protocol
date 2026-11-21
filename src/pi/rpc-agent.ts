@@ -2,6 +2,7 @@ import type { JsonAgentSessionEvent, SlashCommandInfo } from "@earendil-works/pi
 import type { Logger } from "../core/logger.ts";
 import type { PiAgent, PiEvent, PiQueue, PromptInput } from "./agent.ts";
 import type { CompactResult } from "./compaction.ts";
+import type { ContextReport } from "./context-limit.ts";
 import { CANCELLED, notifyLevel, type PiDialogAnswer, type PiUiHandler, parseDialog } from "./dialogs.ts";
 import { RESUME_COMMAND, TRUNCATE_COMMAND } from "./extensions/ahp-resume.ts";
 import type { ThinkingLevel } from "./models.ts";
@@ -27,6 +28,12 @@ export interface RpcAgentOptions {
 	clearQueue?: boolean;
 	/** Set when pi answers `compact`: `pi --mode rpc` does, the bridge extension cannot. */
 	compact?: boolean;
+	/**
+	 * Set when pi may answer `set_context_limit` (Bolt does; stock pi and older Bolt answer
+	 * "Unknown command", which the host finds out on first use), as `pi --mode rpc` offers it and
+	 * the bridge extension cannot.
+	 */
+	contextLimit?: boolean;
 }
 
 /** Reads pi's state over `channel` and returns an agent for it. Closes the channel on failure. */
@@ -81,6 +88,8 @@ export class RpcAgent implements PiAgent {
 	readonly backgroundProcesses: (() => Promise<BackgroundProcess[]>) | undefined;
 	readonly clearQueue: (() => Promise<PiQueue>) | undefined;
 	readonly compact: ((instructions: string | undefined) => Promise<CompactResult>) | undefined;
+	readonly setContextLimit: ((limit: number | null) => Promise<void>) | undefined;
+	readonly contextState: (() => Promise<ContextReport>) | undefined;
 
 	constructor(
 		child: RpcChannel,
@@ -98,6 +107,12 @@ export class RpcAgent implements PiAgent {
 						type: "compact",
 						customInstructions: instructions,
 					})
+			: undefined;
+		this.contextState = options.contextLimit ? () => this.#contextState() : undefined;
+		this.setContextLimit = options.contextLimit
+			? async (limit) => {
+					await child.request({ type: "set_context_limit", limit });
+				}
 			: undefined;
 		this.#capabilities = capabilities;
 		this.#logger = logger;
@@ -155,6 +170,22 @@ export class RpcAgent implements PiAgent {
 		await this.#child.request({ type: "prompt", message: `/${TRUNCATE_COMMAND} ${target.id}` });
 		const leaf = (await this.#branch()).at(-1)?.id ?? null;
 		if (leaf !== target.parentId) throw new Error("pi did not move back to the edited message");
+	}
+
+	/** The limit and model window from `get_state`, and the effective window and tokens from `get_session_stats`. */
+	async #contextState(): Promise<ContextReport> {
+		const [state, stats] = await Promise.all([
+			this.#child.request<{ contextLimit?: number; model?: { contextWindow?: number } }>({ type: "get_state" }),
+			this.#child.request<{ contextUsage?: { tokens: number | null; contextWindow: number } }>({
+				type: "get_session_stats",
+			}),
+		]);
+		return {
+			limit: state.contextLimit ?? null,
+			contextWindow: stats.contextUsage?.contextWindow ?? state.model?.contextWindow ?? null,
+			...(state.model?.contextWindow ? { modelWindow: state.model.contextWindow } : {}),
+			...(stats.contextUsage ? { tokens: stats.contextUsage.tokens } : {}),
+		};
 	}
 
 	/** The entries of pi's current branch, root first. */

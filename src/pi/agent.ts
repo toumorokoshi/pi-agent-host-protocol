@@ -9,6 +9,7 @@ import type {
 	SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { CompactResult } from "./compaction.ts";
+import type { ContextReport } from "./context-limit.ts";
 import type { PiUiHandler } from "./dialogs.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
@@ -100,6 +101,14 @@ export interface PiAgent {
 	 * extension API only starts compaction without waiting for it).
 	 */
 	readonly compact?: (instructions: string | undefined) => Promise<CompactResult>;
+	/**
+	 * Sets the session's context limit in tokens (null clears it), which pi (Bolt) compacts
+	 * against. Rejects when pi has no context limit (stock pi and older Bolt answer "Unknown
+	 * command"). Unset on agents that cannot (a pi terminal through the bridge, embedded pi).
+	 */
+	readonly setContextLimit?: (limit: number | null) => Promise<void>;
+	/** The session's context: limit, effective window, model window and current tokens. Same availability as `setContextLimit`. */
+	readonly contextState?: () => Promise<ContextReport>;
 	abort(): Promise<void>;
 	/** Selects a model by provider and id. Rejects if pi does not know it. */
 	setModel(provider: string, id: string): Promise<void>;

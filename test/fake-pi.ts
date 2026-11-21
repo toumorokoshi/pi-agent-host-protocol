@@ -80,6 +80,15 @@ export class FakePi {
 		result: { tokensBefore: 12_000, estimatedTokensAfter: 3_000 },
 	};
 	#pendingCompact: RpcRecord | undefined;
+	/** The context limit pi holds (`set_context_limit`), reported in `get_state`. */
+	contextLimit: number | undefined;
+	/** The model's window and the context tokens reported in `get_state` / `get_session_stats`. */
+	modelWindow = 1_000_000;
+	contextTokens = 42_000;
+	/** When set, pi answers `set_context_limit` with "Unknown command", as a Bolt without it does. */
+	noContextLimit = false;
+	/** When set, pi fails the next `set_context_limit` with this error, as a crash or timeout would. */
+	contextLimitError: string | undefined;
 
 	constructor(channel: RpcChannel) {
 		this.channel = channel;
@@ -131,7 +140,33 @@ export class FakePi {
 		this.commands.push(command);
 		switch (command.type) {
 			case "get_state":
-				this.channel.respond(command, { data: { model: { provider: "faux", id: "faux-1" }, isStreaming: false } });
+				this.channel.respond(command, {
+					data: {
+						model: { provider: "faux", id: "faux-1", contextWindow: this.modelWindow },
+						isStreaming: false,
+						...(this.contextLimit !== undefined ? { contextLimit: this.contextLimit } : {}),
+					},
+				});
+				break;
+			case "get_session_stats": {
+				const window = Math.min(this.modelWindow, this.contextLimit ?? this.modelWindow);
+				this.channel.respond(command, {
+					data: { contextUsage: { tokens: this.contextTokens, contextWindow: window } },
+				});
+				break;
+			}
+			case "set_context_limit":
+				if (this.noContextLimit) {
+					this.channel.respond(command, { error: "Unknown command: set_context_limit" });
+					break;
+				}
+				if (this.contextLimitError) {
+					this.channel.respond(command, { error: this.contextLimitError });
+					this.contextLimitError = undefined;
+					break;
+				}
+				this.contextLimit = typeof command.limit === "number" ? command.limit : undefined;
+				this.channel.respond(command, { data: { limit: command.limit, contextWindow: null } });
 				break;
 			case "set_model":
 				this.channel.respond(command, { data: { provider: command.provider, id: command.modelId } });
@@ -187,12 +222,17 @@ export class FakeBackend implements PiBackend {
 	readonly #dir: string;
 	readonly #clearQueue: boolean;
 	readonly #compact: boolean;
+	readonly #contextLimit: boolean;
 
-	/** `clearQueue` and `compact` make the agents answer `clear_queue` and `compact`, as `pi --mode rpc` does. */
-	constructor(dir: string, options: { clearQueue?: boolean; compact?: boolean } = {}) {
+	/**
+	 * `clearQueue`, `compact` and `contextLimit` make the agents offer `clear_queue`, `compact` and
+	 * `set_context_limit` (with `get_state` / `get_session_stats` for `/context`), as `pi --mode rpc` does.
+	 */
+	constructor(dir: string, options: { clearQueue?: boolean; compact?: boolean; contextLimit?: boolean } = {}) {
 		this.#dir = dir;
 		this.#clearQueue = options.clearQueue ?? false;
 		this.#compact = options.compact ?? false;
+		this.#contextLimit = options.contextLimit ?? false;
 	}
 
 	/** What `models()` answers, in order; the last entry repeats. An Error is thrown. */
@@ -232,7 +272,11 @@ export class FakeBackend implements PiBackend {
 	async startAgent(): Promise<PiAgent> {
 		const [host, pi] = channelPair();
 		this.pis.push(new FakePi(pi));
-		return connectRpcAgent(host, silentLogger, { clearQueue: this.#clearQueue, compact: this.#compact });
+		return connectRpcAgent(host, silentLogger, {
+			clearQueue: this.#clearQueue,
+			compact: this.#compact,
+			contextLimit: this.#contextLimit,
+		});
 	}
 
 	async dispose(): Promise<void> {}
