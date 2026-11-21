@@ -53,7 +53,13 @@ export class RpcBackend implements PiBackend {
 	constructor(options: RpcBackendOptions = {}) {
 		this.#options = options;
 		this.#logger = options.logger ?? silentLogger;
-		this.models = cached(MODELS_TTL_MS, () => this.#fetchModels());
+		// An empty answer (a slow first start) is returned, so `ModelCatalog` sees it, but not kept for the ttl.
+		this.models = cached(
+			MODELS_TTL_MS,
+			() => this.#fetchModels(),
+			Date.now,
+			(models) => models.length > 0,
+		);
 		this.globalCommands = cached(COMMANDS_TTL_MS, () => inEmptyDir((cwd) => this.#fetchCommands(cwd)));
 		this.folderCommands = cachedBy(COMMANDS_TTL_MS, (cwd: string) => this.#fetchCommands(cwd));
 	}

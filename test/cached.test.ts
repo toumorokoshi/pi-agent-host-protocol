@@ -34,6 +34,24 @@ describe("cached", () => {
 	});
 });
 
+describe("cached with shouldCache", () => {
+	test("returns a result shouldCache rejects but loads again next time", async () => {
+		const answers = [[], [], ["a"]];
+		let loads = 0;
+		const get = cached(
+			1000,
+			async () => answers[loads++] ?? [],
+			() => 0,
+			(list) => list.length > 0,
+		);
+		assert.deepEqual(await get(), []);
+		assert.deepEqual(await get(), []);
+		assert.deepEqual(await get(), ["a"]);
+		assert.deepEqual(await get(), ["a"]);
+		assert.equal(loads, 3);
+	});
+});
+
 describe("cachedBy", () => {
 	test("shares a result per key until it is older than the ttl", async () => {
 		let now = 0;

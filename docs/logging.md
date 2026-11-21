@@ -32,12 +32,14 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 - `client initialized` / `client reconnected`: the handshake finished. Includes the client's name (VS Code reports `vscode-agents-window` or `vscode-editor-window`), its `clientId` and the negotiated protocol version.
 - `reconnect from unknown client; asking it to initialize`: a client this host instance never initialized (usually after a host restart) tried to `reconnect`. It gets `NotFound` and runs `initialize` again, which is expected.
 - `client disconnected`
+- `models available`: the first model listing to succeed after empty or failed ones (`count`, `attempts`).
 
 **`warn`**: things that usually explain why a client can't connect or something failed.
 
 - `connection rejected: missing or invalid token`: the URL's `?tkn=` didn't match the settings file.
 - `request failed`: a request returned an error. Includes the method, channel and error message.
-- `request before initialize`, `could not load models`, `could not save session title`, `could not attach live session`, `could not suspend idle session`, `could not save archived sessions`, `could not save review comments`
+- `pi listed no models` / `could not list models`: a model listing came back empty, failed or took longer than 30 s (`attempt`, `keeping` models, and the `error`); the host keeps the last real list and lists again on a backoff. See [specs/models.md](../specs/models.md).
+- `request before initialize`, `could not save session title`, `could not attach live session`, `could not suspend idle session`, `could not save archived sessions`, `could not save review comments`
 
 **`debug`**: every interaction with a session.
 

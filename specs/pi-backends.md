@@ -41,7 +41,7 @@ This is the previous behaviour, moved behind the shim. `createAgentSession` runs
 
   The working directory is the session's cwd. Session ids and files are the same as in embedded mode, so sessions remain visible to `pi --resume`.
 - **No process for reading.** `listSessions` and history loading read pi's session files directly through `SessionManager`, so browsing old sessions never starts pi.
-- **Models.** A short-lived `pi --mode rpc --no-session` answers `get_available_models`. The result is cached for 30 s, because clients ask on every `initialize`.
+- **Models.** A short-lived `pi --mode rpc --no-session` answers `get_available_models`. The result is cached for 30 s, because clients ask on every `initialize`; an empty answer is not cached. The host's retry and refresh of the list are in [models.md](models.md).
 - **Runs.** `prompt` registers an `agent_settled` waiter before sending the command, then waits for it. A `handled` disposition (an extension command) returns immediately.
 - **Crashes.** If a child exits, pending commands and the active run fail, and the turn ends with a final (non-resumable) `chat/error`: `pi exited with code N: <stderr tail>`. `PiAgent.closed` becomes true, and the session's next turn starts a new child on the same session file.
 - **Extension dialogs.** `extension_ui_request` dialogs (`select`, `confirm`, `input`, `editor`) go to the session's UI handler, which shows them as input requests during a host turn ([extension-dialogs.md](extension-dialogs.md)). Without a handler, or outside a turn, they are answered with `cancelled: true`, so they resolve with their defaults as in embedded mode. `notify` goes to the handler too; the other fire-and-forget UI requests are ignored.

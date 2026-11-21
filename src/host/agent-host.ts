@@ -3,6 +3,7 @@ import type { SessionEntry, SessionInfo } from "@earendil-works/pi-coding-agent"
 import {
 	type ActionOrigin,
 	ActionType,
+	type AgentInfo,
 	AhpErrorCodes,
 	type AnnotationsSummary,
 	type ChatAction,
@@ -50,6 +51,7 @@ import {
 } from "../pi/customizations.ts";
 import { forkTitle } from "../pi/forks.ts";
 import { sweepInterval } from "../pi/idle.ts";
+import { ModelCatalog } from "../pi/model-catalog.ts";
 import { toSessionModelInfo } from "../pi/models.ts";
 import {
 	type ChatBinding,
@@ -60,6 +62,7 @@ import {
 } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
+import { PiStartError } from "../pi/rpc-process.ts";
 import { loadSubagentRuns } from "../pi/subagent-tracker.ts";
 import { SUBAGENT_CHAT_READ_ONLY } from "../pi/subagents.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
@@ -103,6 +106,12 @@ export interface AgentHostOptions {
 	schemes?: SchemeStore;
 	/** Persisted review comments (annotations). Kept in memory when unset. */
 	annotations?: AnnotationStore;
+	/** Delays between model listings while pi has listed none (tests shorten them). */
+	modelRetryDelaysMs?: readonly number[];
+	/** How often models are relisted once there are some (tests shorten it). */
+	modelRefreshIntervalMs?: number;
+	/** Longest one model listing may take before it counts as failed (tests shorten it). */
+	modelListTimeoutMs?: number;
 }
 
 type ActionOutcome = { kind: "accepted" } | { kind: "rejected"; reason: string } | { kind: "ignored" };
@@ -177,6 +186,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	readonly #backgroundTimer: NodeJS.Timeout | undefined;
 	#refreshing: Promise<void> | undefined;
 	#nextRefresh: Promise<void> | undefined;
+	readonly #modelCatalog: ModelCatalog;
 	readonly now: () => number;
 	readonly archive: ArchiveStore;
 	readonly forks: ForkStore;
@@ -223,6 +233,14 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			undefined,
 			(sessionId) => this.schemes.schemeOf(sessionId),
 		);
+		this.#modelCatalog = new ModelCatalog({
+			load: () => this.backend.models(),
+			publish: (models) => this.#updateAgent({ models: models.map(toSessionModelInfo) }),
+			logger: this.logger,
+			retryDelays: options.modelRetryDelaysMs,
+			refreshIntervalMs: options.modelRefreshIntervalMs,
+			listTimeoutMs: options.modelListTimeoutMs,
+		});
 		this.#terminals = new TerminalService(this.store, this.logger, this.#defaultDirectory);
 		this.#watches = new ResourceWatchService(this.store, this.logger);
 		this.store.onEnvelope((envelope) => {
@@ -247,18 +265,22 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	}
 
 	/**
-	 * Loads the model catalog and pi's global skills and prompts (as the
-	 * agent's customizations, for clients composing a new session) into root
-	 * state.
+	 * Lists pi's models (published only when there are some; see specs/models.md)
+	 * and loads pi's global skills and prompts (as the agent's customizations, for
+	 * clients composing a new session) into root state. Rejects only when pi can't
+	 * be started at all, so the CLI can say so.
 	 */
 	async refreshAgents(): Promise<void> {
-		const [models, customizations] = await Promise.all([
-			this.backend.models().then((list) => list.map(toSessionModelInfo)),
-			this.#agentCustomizations(),
-		]);
+		const [listing, customizations] = await Promise.all([this.#modelCatalog.refresh(), this.#agentCustomizations()]);
+		if (customizations) this.#updateAgent({ customizations });
+		if (listing.kind === "failed" && listing.error instanceof PiStartError) throw listing.error;
+	}
+
+	/** Merges `changes` into the agent's root state and publishes it when anything changed. */
+	#updateAgent(changes: Partial<AgentInfo>): void {
 		const [agent] = this.store.root.agents;
 		if (!agent) return;
-		const next = { ...agent, models, ...(customizations ? { customizations } : {}) };
+		const next = { ...agent, ...changes };
 		if (JSON.stringify(agent) === JSON.stringify(next)) return;
 		this.store.dispatch(ROOT_CHANNEL, { type: ActionType.RootAgentsChanged, agents: [next] });
 	}
@@ -355,6 +377,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	}
 
 	async dispose(): Promise<void> {
+		this.#modelCatalog.dispose();
 		if (this.#idleTimer) clearInterval(this.#idleTimer);
 		if (this.#backgroundTimer) clearInterval(this.#backgroundTimer);
 		await this.#sweeping?.catch(() => {});

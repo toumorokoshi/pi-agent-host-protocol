@@ -3,6 +3,7 @@ import { type SessionInfo, SessionManager } from "@earendil-works/pi-coding-agen
 import { type AttachRequest, BRIDGE_PROTOCOL } from "../src/bridge/protocol.ts";
 import { silentLogger } from "../src/core/logger.ts";
 import type { PiAgent, PiBackend } from "../src/pi/agent.ts";
+import type { PiModel } from "../src/pi/models.ts";
 import { connectRpcAgent } from "../src/pi/rpc-agent.ts";
 import { JsonlChannel, type RpcChannel, type RpcRecord } from "../src/pi/rpc-channel.ts";
 import { channelPair } from "./helpers.ts";
@@ -194,8 +195,14 @@ export class FakeBackend implements PiBackend {
 		this.#compact = options.compact ?? false;
 	}
 
+	/** What `models()` answers, in order; the last entry repeats. An Error is thrown. */
+	modelListings: (PiModel[] | Error)[] = [[{ provider: "faux", id: "faux-1" }]];
+	modelCalls = 0;
+
 	async models() {
-		return [{ provider: "faux", id: "faux-1" }];
+		const listing = this.modelListings[Math.min(this.modelCalls++, this.modelListings.length - 1)] ?? [];
+		if (listing instanceof Error) throw listing;
+		return listing;
 	}
 
 	async globalCommands() {

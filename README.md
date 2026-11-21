@@ -89,7 +89,7 @@ Remote agent hosts only appear in the **Agents window**, not in a regular editor
 2. Run **Chat: Open Agents Window**.
 3. Run **Agents: Add Remote Agent Host...** and paste the URL the host printed.
 
-Your available pi models appear in the model picker as `provider/model`. Reasoning models also offer a thinking-level option.
+Your available pi models appear in the model picker as `provider/model`. Reasoning models also offer a thinking-level option. If pi lists no models (for example on a slow first start), the host keeps asking and fills the picker as soon as it gets some, without a reconnect; it also relists every 10 minutes. See [specs/models.md](specs/models.md).
 
 ### Sharing pi terminal sessions
 
