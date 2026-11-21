@@ -28,6 +28,7 @@ The VS Code Agents window opens terminals and file watchers on the host as soon 
   - `includes` globs restrict which paths are reported.
   - Globs are matched against the path relative to the watched root.
 - Watching a single file reports changes to that file only.
+- The OS watch attaches in the background, one at a time per connection (a recursive watch of a large checkout takes 15-40 s). `createResourceWatch` answers straight away; changes before the watch has attached are not reported, and a watch that fails to attach loses its channel.
 - A watch is released when its last subscriber unsubscribes or disconnects. A watch that is never subscribed to is released when the connection that created it closes.
 - Paths are reported under the URI you asked for, even when the OS resolves symlinks. For example, macOS reports `/private/var/...` for `/var/...`.
 

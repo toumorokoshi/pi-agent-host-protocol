@@ -60,7 +60,6 @@ See [specs/compaction.md](specs/compaction.md).
 - **Attachments on `/compact`:** dropped; only the instructions text is used.
 - **Not yet tried in a real VS Code window**, only against the test client and a throwaway host running Bolt.
 
-
 ## Session projects
 
 See [specs/projects.md](specs/projects.md).
@@ -68,7 +67,7 @@ See [specs/projects.md](specs/projects.md).
 - **VS Code grouping:** that a project's `uri` need not be a repository relies on VS Code's grouping behavior, which is not part of the protocol.
 - **Synchronous lookup:** an uncached directory costs a few `existsSync` calls on the event loop; results are cached for a minute (at most 1,000 directories).
 - **Layout-specific rules:** `~/workspaces/<ws>` and CFS workspaces are recognized by path; other layouts are named by their git repository (`<parent>/<repo>`) or path.
-- **Not yet tried in a real VS Code window**, only against VS Code's source and the test client.
+- **Tried in a real VS Code window** (2026-11-21): `cruise-2` and `cruise-3` sessions show as separate folders.
 
 ## Context size and `/context`
 
@@ -168,6 +167,11 @@ See [specs/annotations.md](specs/annotations.md).
 - **pi's `bash` tool** does not run in an AHP terminal, so tool calls have no live terminal view (`ToolResultTerminalContent`).
 - **Watch cost:** watches use `@parcel/watcher`. On Linux, a recursive watch of a large tree (such as a home directory) costs inotify watches. VS Code currently opens about 10 watches when it connects.
 - **Watch permissions:** `createResourceWatch` has no permission gate beyond requiring a host-local `file:` path, the same as `resourceRead`.
+
+## Requests run in order per connection
+
+- One slow request (a git root lookup, listing a large session file) holds up the connection's later requests. Resource watches now attach in the background, one at a time per connection; other slow handlers still block.
+- **Watches on big trees are slow to start:** a recursive watch on a cruise/cruise checkout takes 15-40 s to attach, and a connection's watches attach one at a time. File changes before a watch has attached are never reported (there is no resync signal), and a watch that fails to attach loses its channel without an error to the client.
 
 ## Live TUI sessions (milestone 2)
 

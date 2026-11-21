@@ -548,7 +548,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		if (!channel) return;
 		if (method === "unsubscribe") {
 			connection.unsubscribe(channel, this.store.resolve(channel));
-			await this.#watches.release((uri) => this.#isSubscribed(uri));
+			void this.#watches.release((uri) => this.#isSubscribed(uri));
 		} else if (method === "dispatchAction") {
 			await this.#dispatchAction(connection, channel, params.clientSeq, params.action);
 		}

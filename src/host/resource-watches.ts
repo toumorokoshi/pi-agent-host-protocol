@@ -1,5 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
-import { dirname, matchesGlob, relative, sep } from "node:path";
+import { dirname, join, matchesGlob, relative, sep } from "node:path";
 import { ActionType, type ResourceChange, ResourceChangeType } from "@microsoft/agent-host-protocol";
 import watcher from "@parcel/watcher";
 import type { Logger } from "../core/logger.ts";
@@ -54,6 +54,30 @@ export function watchFilter(options: WatchFilterOptions): (path: string) => bool
 	};
 }
 
+/** Characters that make a path a glob for `@parcel/watcher`. */
+const GLOB_CHARACTERS = /[*?[\]{}()!+@\\]/;
+/** Syntax whose `@parcel/watcher` (picomatch) meaning on an absolute path may differ from `matchesGlob` on a root-relative one. */
+const AMBIGUOUS_GLOB_SYNTAX = /[!()[\]\\]/;
+
+/**
+ * The client excludes `@parcel/watcher` can safely take as `ignore`, so excluded trees are not
+ * watched at all. The watcher matches globs against absolute paths and resolves plain paths
+ * from the watched directory, whereas `watchFilter` matches root-relative paths, so only
+ * patterns that mean the same in both are passed on:
+ * - `**\/…` globs, which match at any depth in either;
+ * - plain paths (no glob characters), made absolute under the root.
+ * Any other glob (`build/**`, `*.log`) is left to `watchFilter`, which stays the source of truth
+ * for what is reported.
+ */
+export function parcelIgnore(realRoot: string, excludes: string[] = []): string[] {
+	return excludes.flatMap((exclude) => {
+		if (exclude.startsWith("**/")) return AMBIGUOUS_GLOB_SYNTAX.test(exclude) ? [] : [exclude];
+		return GLOB_CHARACTERS.test(exclude) || exclude.startsWith("/") || exclude.split("/").includes("..")
+			? []
+			: [join(realRoot, exclude)];
+	});
+}
+
 interface CreateWatchInput {
 	uri: unknown;
 	recursive: boolean;
@@ -62,7 +86,12 @@ interface CreateWatchInput {
 }
 
 interface ActiveWatch {
-	subscription: watcher.AsyncSubscription;
+	/**
+	 * The OS watch, attached in the background: on a large tree (a cruise/cruise checkout)
+	 * `@parcel/watcher` takes tens of seconds to start, and the connection's next requests, such
+	 * as opening a session, would wait behind it. Undefined if it failed to start.
+	 */
+	subscription: Promise<watcher.AsyncSubscription | undefined>;
 	/** Connection that created the watch, until it first subscribes. */
 	owner: object | undefined;
 }
@@ -75,11 +104,24 @@ interface ActiveWatch {
 export class ResourceWatchService {
 	readonly #store: StateStore;
 	readonly #logger: Logger;
+	readonly #subscribe: typeof watcher.subscribe;
 	readonly #watches = new Map<string, ActiveWatch>();
+	/**
+	 * Each connection's watches attach one at a time. `@parcel/watcher` runs each subscribe on
+	 * libuv's thread pool (4 threads by default) and the subscribes wait on each other there, so a
+	 * few recursive watches on big trees (VS Code asks for `~/workspaces` and each checkout) filled
+	 * the pool, and every other file operation in the host, such as reading a session file, waited
+	 * for them. The queue is per connection so one client's slow tree doesn't hold up another's.
+	 */
+	readonly #attachQueues = new WeakMap<object, Promise<unknown>>();
+	/** Unsubscribes that have started and not finished, so `disposeAll` can wait for them. */
+	readonly #unsubscribing = new Set<Promise<void>>();
 
-	constructor(store: StateStore, logger: Logger) {
+	/** `subscribe` is the OS watch; tests replace it. */
+	constructor(store: StateStore, logger: Logger, subscribe: typeof watcher.subscribe = watcher.subscribe) {
 		this.#store = store;
 		this.#logger = logger;
+		this.#subscribe = subscribe;
 	}
 
 	async create(input: CreateWatchInput, owner: object): Promise<{ channel: string }> {
@@ -94,17 +136,48 @@ export class ResourceWatchService {
 		const realRoot = await realpath(root);
 		const accept = watchFilter({ root: realRoot, isFile: info.isFile(), recursive, includes, excludes });
 		const channel = `ahp-resource-watch:/${crypto.randomUUID()}`;
-		const subscription = await watcher.subscribe(info.isFile() ? dirname(realRoot) : realRoot, (error, events) => {
-			if (error) {
-				this.#logger.warn("resource watch error", { watch: channel, error: error.message });
-				return;
-			}
-			const items: ResourceChange[] = events
-				.filter((event) => accept(event.path))
-				.map((event) => ({ uri: fileUri(clientPath(event.path, realRoot, root)), type: CHANGE_TYPES[event.type] }));
-			if (items.length > 0)
-				this.#store.dispatch(channel, { type: ActionType.ResourceWatchChanged, changes: { items } });
-		});
+		const started = Date.now();
+		const ignore = info.isFile() ? [] : parcelIgnore(realRoot, excludes);
+		const attach = () =>
+			this.#subscribe(
+				info.isFile() ? dirname(realRoot) : realRoot,
+				(error, events) => {
+					if (error) {
+						this.#logger.warn("resource watch error", { watch: channel, error: error.message });
+						return;
+					}
+					const items: ResourceChange[] = events
+						.filter((event) => accept(event.path))
+						.map((event) => ({ uri: fileUri(clientPath(event.path, realRoot, root)), type: CHANGE_TYPES[event.type] }));
+					if (items.length > 0 && this.#watches.has(channel)) {
+						this.#store.dispatch(channel, { type: ActionType.ResourceWatchChanged, changes: { items } });
+					}
+				},
+				ignore.length > 0 ? { ignore } : undefined,
+			);
+		const watch: ActiveWatch = { subscription: Promise.resolve(undefined), owner };
+		watch.subscription = (this.#attachQueues.get(owner) ?? Promise.resolve())
+			.then(() => (this.#watches.get(channel) === watch ? attach() : undefined))
+			.then(
+				(attached) => {
+					this.#logger.debug("resource watch attached", { watch: channel, ms: Date.now() - started });
+					return attached;
+				},
+				(error: unknown) => {
+					this.#logger.warn("resource watch error", {
+						watch: channel,
+						phase: "attach",
+						error: error instanceof Error ? error.message : String(error),
+					});
+					// A watch that cannot attach would never report anything: take its channel away.
+					if (this.#watches.get(channel) === watch) {
+						this.#watches.delete(channel);
+						this.#store.removeChannel(channel);
+					}
+					return undefined;
+				},
+			);
+		this.#attachQueues.set(owner, watch.subscription);
 		this.#store.addChannel(channel, {
 			kind: "resourceWatch",
 			state: {
@@ -114,7 +187,7 @@ export class ResourceWatchService {
 				...(includes ? { includes: { items: includes } } : {}),
 			},
 		});
-		this.#watches.set(channel, { subscription, owner });
+		this.#watches.set(channel, watch);
 		this.#logger.debug("resource watch created", { watch: channel, root, recursive });
 		return { channel };
 	}
@@ -128,23 +201,41 @@ export class ResourceWatchService {
 	/**
 	 * Releases every watch without a subscriber. A watch that was created but
 	 * not yet subscribed survives until its creating connection goes away.
+	 * Resolves once the released watches have unsubscribed, which waits for any that
+	 * are still attaching; callers on a request path don't await it.
 	 */
 	async release(isSubscribed: (channel: string) => boolean, closedOwner?: object): Promise<void> {
+		const unsubscribes: Promise<void>[] = [];
 		for (const [channel, watch] of [...this.#watches]) {
 			if (isSubscribed(channel)) continue;
 			if (watch.owner !== undefined && watch.owner !== closedOwner) continue;
 			this.#watches.delete(channel);
 			this.#store.removeChannel(channel);
-			await watch.subscription.unsubscribe().catch(() => {});
+			unsubscribes.push(this.#unsubscribe(watch));
 			this.#logger.debug("resource watch released", { watch: channel });
 		}
+		await Promise.all(unsubscribes);
 	}
 
+	/** Releases every watch and waits for all unsubscribes, including ones an earlier `release` started. */
 	async disposeAll(): Promise<void> {
 		await this.release(() => false, undefined);
 		for (const [channel, watch] of [...this.#watches]) {
 			this.#watches.delete(channel);
-			await watch.subscription.unsubscribe().catch(() => {});
+			void this.#unsubscribe(watch);
 		}
+		await Promise.all([...this.#unsubscribing]);
 	}
+
+	#unsubscribe(watch: ActiveWatch): Promise<void> {
+		const done: Promise<void> = unsubscribe(watch).finally(() => this.#unsubscribing.delete(done));
+		this.#unsubscribing.add(done);
+		return done;
+	}
+}
+
+/** Stops a watch's OS watcher once it has attached; never rejects. */
+async function unsubscribe(watch: ActiveWatch): Promise<void> {
+	const subscription = await watch.subscription;
+	await subscription?.unsubscribe().catch(() => {});
 }

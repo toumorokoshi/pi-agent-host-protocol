@@ -169,14 +169,20 @@ describe("resource watch channel", () => {
 		const { snapshot } = await client.request("subscribe", { channel });
 		assert.equal(snapshot.state.recursive, true);
 
+		// The OS watch attaches in the background, so keep touching the file until it reports.
 		await writeFile(join(host.cwd, "ignored", "skip.txt"), "x");
 		const watched = join(host.cwd, "watched.txt");
-		await writeFile(watched, "x");
-		const change = await client.waitFor(
-			(m) =>
-				m.params?.channel === channel &&
-				m.params.action.changes.items.some((item: { uri: string }) => item.uri.endsWith("/watched.txt")),
-		);
+		const touch = setInterval(() => void writeFile(watched, String(Date.now())), 50);
+		let change: Awaited<ReturnType<typeof client.waitFor>>;
+		try {
+			change = await client.waitFor(
+				(m) =>
+					m.params?.channel === channel &&
+					m.params.action.changes.items.some((item: { uri: string }) => item.uri.endsWith("/watched.txt")),
+			);
+		} finally {
+			clearInterval(touch);
+		}
 		assert.equal(change.params.action.type, "resourceWatch/changed");
 		const reported = client.envelopes
 			.filter((envelope) => envelope.channel === channel)
