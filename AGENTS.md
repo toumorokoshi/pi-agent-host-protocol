@@ -44,6 +44,11 @@ Always add and update documentation as appropriate. Update at least the followin
 
 - linting, formatting, and testing **must** pass before a commit.
 - add unit tests for every change if possible.
+- the end-to-end tests start real pi processes (one per session, plus short
+  probes for models and commands), so a full `npm test` starts a few hundred
+  of them. `npm test` caps the run at four test files at a time; keep that
+  cap, run one full suite at a time, and while iterating run only the files
+  a change touches (`node --test test/<file>.test.ts`).
 
 ## CI
 

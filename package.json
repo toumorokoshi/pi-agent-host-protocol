@@ -15,15 +15,17 @@
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
 		"typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
-		"test": "node --test --test-timeout=60000 'test/**/*.test.ts'",
+		"test": "node --test --test-concurrency=4 --test-timeout=60000 'test/**/*.test.ts'",
 		"start": "node src/bin/pi-agent-host-protocol.ts",
 		"prepare": "npm run build"
 	},
 	"engines": {
 		"node": ">=24"
 	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=1.0.1"
+	},
 	"dependencies": {
-		"@earendil-works/pi-coding-agent": "^1.0.1",
 		"@lydell/node-pty": "^1.2.0-beta.15",
 		"@microsoft/agent-host-protocol": "^1.0.0",
 		"@parcel/watcher": "^2.6.0",
@@ -32,6 +34,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.15",
 		"@earendil-works/pi-ai": "^1.0.1",
+		"@earendil-works/pi-coding-agent": "^1.0.1",
 		"@types/node": "^26.6.4",
 		"@types/ws": "^8.18.2",
 		"typescript": "^7.0.2"

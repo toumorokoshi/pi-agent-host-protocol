@@ -3,11 +3,16 @@
  * registered by the TUI bridge extension for live sessions.
  *
  * pi's RPC protocol has no command that continues a run without a new user
- * message, so `chat/turnResume` sends the `/ahp-resume` command instead. It
- * appends a hidden marker message that triggers a new run, and a `context`
- * handler removes the marker and the failed reply in front of it from every
- * model request. The session file keeps both, the same way the embedded
- * backend's `context_edit` keeps the raw transcript.
+ * message, so the host sends the `/ahp-resume` command instead. It appends a
+ * hidden marker message that triggers a new run, and a `context` handler
+ * removes the marker and the failed reply in front of it from every model
+ * request. The session file keeps both, the same way the embedded backend's
+ * `context_edit` keeps the raw transcript. Two host calls use it:
+ * `PiAgent.resume()` (`chat/turnResume`, after a provider error, so the failed
+ * reply is dropped on purpose) and `PiAgent.runQueued()` (a run that delivers
+ * steering messages pi still holds, which the host starts only after a run that
+ * did not end in a resumable error, so the reply in front of the marker is
+ * never an error and nothing is dropped).
  *
  * pi's RPC protocol has no command that moves the session's leaf either, so
  * `chat/truncated` sends `/ahp-truncate <entryId>`, which navigates pi's
@@ -21,6 +26,8 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+/** The `/ahp` command of the bridge extension (`src/extension/index.ts`). */
+export const BRIDGE_COMMAND = "ahp";
 export const RESUME_COMMAND = "ahp-resume";
 export const RESUME_MARKER = "ahp-resume";
 export const TRUNCATE_COMMAND = "ahp-truncate";

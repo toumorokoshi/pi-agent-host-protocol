@@ -4,7 +4,7 @@
  * specs/live-tui-sessions.md.
  */
 import type { AgentSessionEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import ahpResume from "../pi/extensions/ahp-resume.ts";
+import ahpResume, { BRIDGE_COMMAND } from "../pi/extensions/ahp-resume.ts";
 import { bridgeClient } from "./client.ts";
 
 /** The session events the host needs to mirror turns. */
@@ -39,7 +39,7 @@ export default function piAgentHostBridge(pi: ExtensionAPI): void {
 		pi.on(type as "agent_start", (event) => client.forward(event as unknown as AgentSessionEvent));
 	}
 
-	pi.registerCommand("ahp", {
+	pi.registerCommand(BRIDGE_COMMAND, {
 		description: "Share this session with VS Code through pi-agent-host-protocol: /ahp [status|on|off|start]",
 		handler: async (args, ctx) => {
 			switch (args.trim() || "status") {

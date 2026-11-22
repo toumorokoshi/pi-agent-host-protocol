@@ -89,6 +89,7 @@ export class RpcBackend implements PiBackend {
 		const background = Promise.withResolvers<() => Promise<BackgroundProcess[]>>();
 		const agent = await connectRpcAgent(channel, this.#logger, {
 			backgroundProcesses: async () => (await background.promise)(),
+			clearQueue: true,
 		});
 		background.resolve(pid === undefined ? async () => [] : await this.#backgroundProcesses(pid));
 		this.#agents.add(agent);

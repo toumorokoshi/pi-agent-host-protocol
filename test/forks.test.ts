@@ -181,6 +181,25 @@ for (const mode of PI_MODES) {
 			);
 		});
 
+		test("a fork at VS Code's URI for it is a new chat, not the default one", async () => {
+			const { session, chat, first } = await twoTurns();
+			const fork = `ahp-chat://${crypto.randomUUID()}/${Buffer.from(session, "utf8").toString("base64url")}`;
+			await client.request("createChat", {
+				channel: session,
+				chat: fork,
+				source: { kind: "fork", chat, turnId: first },
+			});
+			await client.subscribe(fork);
+			assert.deepEqual(
+				client.chats.get(fork)!.turns.map((t) => t.message.text),
+				["first"],
+			);
+			assert.deepEqual(
+				client.sessions.get(session)!.chats.map((summary) => summary.resource),
+				[chat, fork],
+			);
+		});
+
 		test("a fork at the latest turn keeps them all, and can start with a message", async () => {
 			const { session, chat, second } = await twoTurns();
 			const fork = `ahp-chat:/${crypto.randomUUID()}`;
@@ -207,6 +226,45 @@ for (const mode of PI_MODES) {
 			);
 		});
 
+		test("renaming a fork renames only that chat, and renaming the default chat renames the session", async () => {
+			const { session, chat, first } = await twoTurns();
+			const fork = `ahp-chat:/${crypto.randomUUID()}`;
+			await client.request("createChat", {
+				channel: session,
+				chat: fork,
+				source: { kind: "fork", chat, turnId: first },
+			});
+			const titles = () => {
+				const state = client.sessions.get(session)!;
+				return {
+					session: state.title,
+					chats: Object.fromEntries(state.chats.map((summary) => [summary.resource, summary.title])),
+				};
+			};
+			const renamed = (resource: string, title: string) =>
+				client.waitFor(
+					(m) =>
+						m.params?.action?.type === "session/chatUpdated" &&
+						m.params.action.chat === resource &&
+						m.params.action.changes?.title === title,
+				);
+
+			let echoed = renamed(fork, "Other approach");
+			const clientSeq = client.dispatch(fork, { type: "session/titleChanged", title: "Other approach" });
+			const echo = await echoed;
+			assert.deepEqual(
+				echo.params.origin,
+				{ clientId: client.clientId, clientSeq },
+				"the rename is echoed to the client that sent it",
+			);
+			assert.deepEqual(titles(), { session: "first", chats: { [chat]: "first", [fork]: "Other approach" } });
+
+			echoed = renamed(chat, "Main line");
+			client.dispatch(chat, { type: "session/titleChanged", title: "Main line" });
+			await echoed;
+			assert.deepEqual(titles(), { session: "Main line", chats: { [chat]: "Main line", [fork]: "Other approach" } });
+		});
+
 		test("rejects forks it cannot make", async () => {
 			const { session, chat, first } = await twoTurns();
 			const other = await newSession(host, client);
@@ -229,6 +287,35 @@ for (const mode of PI_MODES) {
 	});
 
 	describe(`forked chats after a restart (${mode})`, () => {
+		test("open by VS Code's URI for them before their session loads", async () => {
+			const first = await startHost({ mode });
+			const client = await TestClient.connect(first.url);
+			await client.initialize();
+			const { session, chat } = await newSession(first, client);
+			first.faux.setResponses([fauxAssistantMessage("A.")]);
+			const one = startTurn(client, chat, "one");
+			await client.waitFor((m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === one);
+			const fork = `ahp-chat://${crypto.randomUUID()}/${Buffer.from(session, "utf8").toString("base64url")}`;
+			await client.request("createChat", { channel: session, chat: fork, source: { kind: "fork", chat, turnId: one } });
+			client.close();
+			await first.stop();
+
+			const second = await startHost({ dir: first.dir, mode });
+			try {
+				const reconnected = await TestClient.connect(second.url);
+				await reconnected.initialize();
+				// Nothing has loaded the session: only the fork's own URI is subscribed.
+				await reconnected.subscribe(fork);
+				assert.deepEqual(
+					reconnected.chats.get(fork)!.turns.map((t) => t.message.text),
+					["one"],
+				);
+				reconnected.close();
+			} finally {
+				await second.cleanup();
+			}
+		});
+
 		test("stay chats of their session", async () => {
 			const first = await startHost({ mode });
 			const client = await TestClient.connect(first.url);
@@ -242,6 +329,11 @@ for (const mode of PI_MODES) {
 			await complete(startTurn(client, chat, "two"));
 			const fork = `ahp-chat:/${crypto.randomUUID()}`;
 			await client.request("createChat", { channel: session, chat: fork, source: { kind: "fork", chat, turnId: one } });
+			const renamed = client.waitFor(
+				(m) => m.params?.action?.type === "session/chatUpdated" && m.params.action.changes?.title === "Renamed fork",
+			);
+			client.dispatch(fork, { type: "session/titleChanged", title: "Renamed fork" });
+			await renamed;
 			client.close();
 			await first.stop();
 
@@ -256,8 +348,12 @@ for (const mode of PI_MODES) {
 					"the fork is not listed as a session",
 				);
 				assert.deepEqual(
-					items[0].chats.map((summary: { resource: string }) => summary.resource),
-					[chat, fork],
+					items[0].chats.map((summary: { resource: string; title: string }) => [summary.resource, summary.title]),
+					[
+						[chat, "one"],
+						[fork, "Renamed fork"],
+					],
+					"the fork keeps its new name, and the session its own",
 				);
 				await reconnected.subscribe(fork);
 				assert.deepEqual(

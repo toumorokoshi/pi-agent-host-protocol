@@ -4,6 +4,7 @@ import {
 	type ActionOrigin,
 	ActionType,
 	AhpErrorCodes,
+	type AnnotationsSummary,
 	type ChatAction,
 	ChatOriginKind,
 	CompletionItemKind,
@@ -25,8 +26,9 @@ import {
 } from "@microsoft/agent-host-protocol";
 import type { AttachRequest } from "../bridge/protocol.ts";
 import { type Logger, silentLogger } from "../core/logger.ts";
-import { StateStore } from "../core/state-store.ts";
+import { annotationsSummary, StateStore } from "../core/state-store.ts";
 import {
+	annotationsUri,
 	type ChatRef,
 	chatUri,
 	fileUri,
@@ -59,6 +61,7 @@ import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
+import { type AnnotationStore, memoryAnnotationStore } from "./annotation-store.ts";
 import { type ArchiveStore, memoryArchiveStore } from "./archive-store.ts";
 import type { LiveSessionHandler } from "./bridges.ts";
 import { Connection, type ConnectionHandler, type RESPONDED, type Reply } from "./connection.ts";
@@ -94,6 +97,8 @@ export interface AgentHostOptions {
 	forks?: ForkStore;
 	/** Persisted session schemes. Kept in memory when unset. */
 	schemes?: SchemeStore;
+	/** Persisted review comments (annotations). Kept in memory when unset. */
+	annotations?: AnnotationStore;
 }
 
 type ActionOutcome = { kind: "accepted" } | { kind: "rejected"; reason: string } | { kind: "ignored" };
@@ -110,6 +115,20 @@ const ACCEPTED_SESSION_ACTIONS = new Set<string>([
 	ActionType.SessionActiveClientRemoved,
 	ActionType.SessionConfigChanged,
 	ActionType.SessionWorkingDirectoryReplaced,
+]);
+
+/**
+ * Annotations-channel actions, all of which clients may dispatch. They are
+ * also the actions after which `AgentHost` saves a session's annotations
+ * (`#annotationsChanged`), so a host-side dispatch (`PiSession.#resolveComments`)
+ * is saved too.
+ */
+const ANNOTATIONS_ACTIONS = new Set<string>([
+	ActionType.AnnotationsSet,
+	ActionType.AnnotationsUpdated,
+	ActionType.AnnotationsRemoved,
+	ActionType.AnnotationsEntrySet,
+	ActionType.AnnotationsEntryRemoved,
 ]);
 
 const UNSUPPORTED_METHODS = new Set([
@@ -158,6 +177,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	readonly archive: ArchiveStore;
 	readonly forks: ForkStore;
 	readonly schemes: SchemeStore;
+	readonly annotations: AnnotationStore;
 
 	constructor(options: AgentHostOptions) {
 		this.backend = options.backend;
@@ -168,6 +188,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		this.archive = options.archive ?? memoryArchiveStore();
 		this.forks = options.forks ?? memoryForkStore();
 		this.schemes = options.schemes ?? memorySchemeStore();
+		this.annotations = options.annotations ?? memoryAnnotationStore();
 		this.#idleTimeoutMs = options.idleTimeoutMs ?? 0;
 		if (this.#idleTimeoutMs > 0) {
 			this.#idleTimer = setInterval(() => void this.suspendIdleSessions(), sweepInterval(this.#idleTimeoutMs));
@@ -202,7 +223,23 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		this.#watches = new ResourceWatchService(this.store, this.logger);
 		this.store.onEnvelope((envelope) => {
 			for (const connection of this.#connections) connection.deliver(envelope);
+			if (ANNOTATIONS_ACTIONS.has(envelope.action.type)) this.#annotationsChanged(envelope.channel);
 		});
+	}
+
+	/**
+	 * Saves a session's annotations after any change to its channel, and publishes
+	 * their counts. The single place annotations are persisted: `PiSession` only
+	 * reads them (`SessionHostContext.annotations`), unlike archived flags, which
+	 * it writes through `ArchiveStore` because only it knows when they change.
+	 */
+	#annotationsChanged(channel: string): void {
+		const ref = this.store.ref(channel);
+		if (ref.kind !== "annotations") return;
+		const annotations = this.store.annotations(ref.sessionId)?.annotations ?? [];
+		this.annotations.setAnnotations(ref.sessionId, annotations);
+		const summary = this.store.session(ref.sessionId)?.annotations;
+		if (summary) this.summaryChanged(ref.sessionId, { annotations: summary });
 	}
 
 	/**
@@ -330,6 +367,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		await this.backend.dispose();
 		await this.archive.flush();
 		await this.schemes.flush();
+		await this.annotations.flush();
 	}
 
 	/** Every loaded chat: sessions' default chats and forked chats. */
@@ -577,9 +615,11 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		if (this.store.channel(channel)) return;
 		const ref = this.store.ref(channel);
 		if (ref.kind === "root") return;
-		if (ref.kind === "unknown") throw ProtocolError.notFound(channel);
-		// A forked chat's URI is the client's; until its session loads, only the fork store knows it.
-		const sessionId = forkByChat(this.forks.all(), channel)?.[1].session ?? ref.sessionId;
+		// A forked chat's URI is the client's (VS Code's `ahp-chat://<id>/<b64>` parses as
+		// unknown); until its session loads, only the fork store knows it.
+		const fork = forkByChat(this.forks.all(), channel);
+		const sessionId = fork?.[1].session ?? (ref.kind === "unknown" ? undefined : ref.sessionId);
+		if (sessionId === undefined) throw ProtocolError.notFound(channel);
 		if (this.#sessions.has(sessionId)) return;
 		const info = (await this.#catalogSessions()).find((session) => session.id === sessionId);
 		if (!info) throw ProtocolError.sessionNotFound(channel);
@@ -759,6 +799,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		const resource = this.store.sessionResource(id);
 		this.store.removeSession(id);
 		this.schemes.setScheme(id, PROVIDER);
+		this.annotations.setAnnotations(id, []);
 		await session.dispose();
 		this.#notifyRoot("root/sessionRemoved", { session: resource });
 		return null;
@@ -779,7 +820,9 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				const fork = byId.get(id);
 				return fork ? [forkedChatSummary(fork, record)] : [];
 			});
-			all.push(catalogSummary(info, this.archive.isArchived(info.id), this.schemes.schemeOf(info.id), forkedChats));
+			const scheme = this.schemes.schemeOf(info.id);
+			const annotations = annotationsSummary(annotationsUri(info.id, scheme), this.annotations.annotationsOf(info.id));
+			all.push(catalogSummary(info, this.archive.isArchived(info.id), scheme, annotations, forkedChats));
 		}
 		all.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 		const offset = typeof params.cursor === "string" ? Number.parseInt(params.cursor, 10) || 0 : 0;
@@ -832,8 +875,14 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		if (exact?.kind === "resourceWatch") return unsupported;
 		if (this.store.ref(channel).kind !== "root") await this.#load(channel).catch(() => undefined);
 		let ref = this.store.ref(channel);
-		// VS Code addresses session renames to the chat; AHP defines them on the session.
+		// VS Code renames a chat with `session/titleChanged` on its chat channel. A
+		// forked chat is renamed on its own; the default chat renames its session.
 		if (ref.kind === "chat" && action.type === ActionType.SessionTitleChanged) {
+			const chat = this.#chat(ref);
+			if (chat?.isFork) {
+				chat.renameChat(action.title, origin);
+				return { kind: "accepted" };
+			}
 			ref = { kind: "session", sessionId: ref.sessionId };
 		}
 		switch (ref.kind) {
@@ -862,6 +911,12 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				const reason = session.validateChatAction(action);
 				if (reason) return { kind: "rejected", reason };
 				if (this.store.dispatch(channel, action, origin)) session.onChatAction(action as ChatAction);
+				return { kind: "accepted" };
+			}
+			case "annotations": {
+				if (!this.store.annotations(ref.sessionId)) return { kind: "ignored" };
+				if (!ANNOTATIONS_ACTIONS.has(action.type)) return unsupported;
+				this.store.dispatch(this.store.annotationsResource(ref.sessionId), action, origin);
 				return { kind: "accepted" };
 			}
 			default:
@@ -936,6 +991,7 @@ function catalogSummary(
 	info: SessionInfo,
 	archived: boolean,
 	scheme: SessionScheme,
+	annotations: AnnotationsSummary,
 	forkedChats: SessionChatSummary[] = [],
 ): SessionSummary {
 	const title = catalogTitle(info);
@@ -949,6 +1005,7 @@ function catalogSummary(
 		modifiedAt: info.modified.toISOString(),
 		workingDirectories: [fileUri(info.cwd)],
 		chats: [{ resource: chatUri(info.id, scheme), title, status }, ...forkedChats],
+		annotations,
 	};
 }
 

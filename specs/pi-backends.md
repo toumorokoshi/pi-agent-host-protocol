@@ -22,9 +22,11 @@ In rpc mode, `--pi <path>` (or `"pi"` in `settings.json`) picks the executable. 
 `PiSession` (protocol logic: turns, queueing, steering, cancellation, resume validation, titles) talks only to two interfaces in `src/pi/agent.ts`:
 
 - `PiBackend`: `models()`, `listSessions()`, `newSessionManager()`, `openSessionManager()`, `startAgent()` and `dispose()`.
-- `PiAgent`: `prompt()` (resolves when the run settles), `resume()`, `steer()`, `abort()`, `setModel()`, `setThinkingLevel()`, `setSessionName()`, `commands()` (pi's slash commands, see [skills.md](skills.md)), `subscribe()`, `dispose()`, plus `model`, `thinkingLevel` and `closed`.
+- `PiAgent`: `prompt()` (resolves when the run settles), `resume()`, `runQueued()` (a run without a new message, in which pi delivers the steering messages it holds; see [steering.md](steering.md)), `steer()`, `clearQueue()` (optional), `abort()`, `setModel()`, `setThinkingLevel()`, `setSessionName()`, `commands()` (pi's slash commands, see [skills.md](skills.md)), `subscribe()`, `dispose()`, plus `model`, `thinkingLevel` and `closed`.
 
 Events are `PiEvent`, the union of the SDK's `AgentSessionEvent` and the RPC wire form (`JsonAgentSessionEvent`). The wire form drops the cumulative `partial` snapshots from `message_update`, so `TurnMapper` reads tool-call ids from either form (`startedToolCall`).
+
+`@earendil-works/pi-coding-agent` is a peer dependency (`>=1.0.1`) and a dev dependency (`^1.0.1`, which tests and the embedded backend use). The host imports pi's runtime and relies on 1.x RPC (`clear_queue`, `queue_update`, `extension_ui_request`), so the range stops at the first release that has them; there is no upper bound because pi packages are expected to follow pi's latest. A pi older than that fails at runtime, not at install.
 
 ### Embedded (`src/pi/embedded-backend.ts`)
 
@@ -42,7 +44,7 @@ This is the previous behaviour, moved behind the shim. `createAgentSession` runs
 - **Models.** A short-lived `pi --mode rpc --no-session` answers `get_available_models`. The result is cached for 30 s, because clients ask on every `initialize`.
 - **Runs.** `prompt` registers an `agent_settled` waiter before sending the command, then waits for it. A `handled` disposition (an extension command) returns immediately.
 - **Crashes.** If a child exits, pending commands and the active run fail, and the turn ends with a final (non-resumable) `chat/error`: `pi exited with code N: <stderr tail>`. `PiAgent.closed` becomes true, and the session's next turn starts a new child on the same session file.
-- **Extension dialogs.** `extension_ui_request` dialogs (`select`, `confirm`, `input`, `editor`) are answered with `cancelled: true`, so they resolve with their defaults as in embedded mode. Fire-and-forget UI requests are ignored.
+- **Extension dialogs.** `extension_ui_request` dialogs (`select`, `confirm`, `input`, `editor`) go to the session's UI handler, which shows them as input requests during a host turn ([extension-dialogs.md](extension-dialogs.md)). Without a handler, or outside a turn, they are answered with `cancelled: true`, so they resolve with their defaults as in embedded mode. `notify` goes to the handler too; the other fire-and-forget UI requests are ignored.
 - **Logging.** Child stderr is logged at debug as `pi stderr`; stdout carries only protocol records.
 - **Shutdown.** `dispose` closes the child's stdin (pi's orderly shutdown), then sends SIGTERM and finally SIGKILL, each after a 2 s grace period.
 

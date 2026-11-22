@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { bridgeSocketPath } from "../bridge/protocol.ts";
 import { createLogger, LOG_LEVELS, type Logger, parseLogLevel } from "../core/logger.ts";
 import { AgentHost } from "../host/agent-host.ts";
+import { annotationStorePath, fileAnnotationStore } from "../host/annotation-store.ts";
 import { archivePath, fileArchiveStore } from "../host/archive-store.ts";
 import { BridgeServer, HostAlreadyRunningError } from "../host/bridges.ts";
 import { fileForkStore, forkStorePath } from "../host/fork-store.ts";
@@ -129,11 +130,15 @@ async function main(): Promise<void> {
 	const schemes = await fileSchemeStore(schemeStorePath(settingsPath()), (error) =>
 		logger.warn("could not save session schemes", { error: error instanceof Error ? error.message : String(error) }),
 	);
+	const annotations = await fileAnnotationStore(annotationStorePath(settingsPath()), (error) =>
+		logger.warn("could not save review comments", { error: error instanceof Error ? error.message : String(error) }),
+	);
 	const agentHost = new AgentHost({
 		backend,
 		archive,
 		forks,
 		schemes,
+		annotations,
 		idleTimeoutMs,
 		backgroundWorkIntervalMs: piMode === "rpc" ? BACKGROUND_WORK_INTERVAL_MS : 0,
 		defaultDirectory: values.cwd ?? process.cwd(),

@@ -116,7 +116,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - Streaming turns: text, reasoning, tool calls and their results, token usage and errors.
 - **Busy indicator:** a session's summary status shows `InProgress` for as long as a turn runs, including after the client marks the session read or archived. Its `activity` text says what the turn is doing (`Thinking`, `Responding`, `Running npm test`, `Reading src/a.ts`). See [specs/session-activity.md](specs/session-activity.md).
 - **Background work** (`rpc` mode): processes pi started that are still running after a turn (background jobs, subagents, dev servers) are listed as the chat's background work (`chat/backgroundWorkSet` / `chat/backgroundWorkRemoved`), and their count is in the session summary's `_meta` under `pi-agent-host-protocol/backgroundWork`, so a session list can show the session as still working. See [specs/background-work.md](specs/background-work.md).
-- Cancellation, steering messages, and queued messages that run once the current turn ends. A steering message opens a new turn when pi delivers it. A steering message that arrives when no turn is running (for example "send immediately" on a queued message just as the turn ends) starts a turn of its own instead of staying pending (see [specs/steering.md](specs/steering.md)).
+- Cancellation, steering messages, and queued messages that run once the current turn ends. A steering message opens a new turn when pi delivers it, which is once the current reply's tool calls finish, as VS Code's "Steer with Message" describes; use "Stop and Send" to interrupt a long tool call. A steering message pi had not delivered when its run ended runs as the next turn; after a cancel it is dropped, so it doesn't come back in the next run. A steering message that arrives when no turn is running (for example "send immediately" on a queued message just as the turn ends) starts a turn of its own instead of staying pending (see [specs/steering.md](specs/steering.md)).
 - **Resumable errors:** when the model server fails mid-turn (for example llama.cpp's `Failed to parse input` on a malformed tool call), the turn ends with a resumable error. The client can then continue the same turn without sending a new message, and the failed reply is left out of the model's context, the same as pi's own auto-retry.
 - **Editing a message and restarting from it:** `chat/truncated` (then `chat/turnStarted` with the edit) moves pi's session back to the kept turns, as pi's own `/tree` does, cancelling a running turn first. The model no longer sees the dropped turns; they stay in the session file on an abandoned branch. See [specs/truncation.md](specs/truncation.md).
 - **Forking a chat:** `createChat` with a fork source branches the chat at a completed turn into a new chat of the same session, through pi's `createBranchedSession`. The fork is its own pi session file, so the model has the same context through that turn, and the original chat is unchanged. Forks stay chats of their session across restarts (`~/.pi/agent-host-protocol/forked-chats.json`). See [specs/forks.md](specs/forks.md).
@@ -129,13 +129,15 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - **Terminals:** `createTerminal` and `disposeTerminal` run your `$SHELL` in a real pty in the requested directory. Keystrokes, resizes, renames, `clear` and exit codes all work, and `RootState.terminals` lists every terminal.
 - **Skills and prompt templates:** each session publishes the skills and prompt templates pi loaded as read-only customizations, the root state lists pi's global ones as the agent's customizations (for clients starting a session), and typing `/` at the start of a message completes them. See [docs/skills.md](docs/skills.md).
 - **Resource watches:** `createResourceWatch` watches files and directories with `@parcel/watcher`, recursively or not, with include/exclude globs. A watch is released when its last subscriber unsubscribes. See [docs/terminals-and-watches.md](docs/terminals-and-watches.md).
+- **Review comments:** each session has an annotations channel (`<session>/annotations`), so comments added in VS Code's Agents window are kept by the host (`~/.pi/agent-host-protocol/annotations.json`). Submitting them sends each comment, with its file, lines and selection, to pi, and a completed turn marks them resolved. See [specs/annotations.md](specs/annotations.md).
+- **Extension dialogs** (`rpc` mode): `ctx.ui.select`, `confirm`, `input` and `editor` from a pi extension become AHP input requests in the running turn, which VS Code shows as questions above the chat input, and `ctx.ui.notify` appears in the turn. See [specs/extension-dialogs.md](specs/extension-dialogs.md).
 
 ### Known limitations
 
 - Chats beyond a session's default one come only from forks. Side chats, empty new chats, `moveChat` and `disposeChat` are not supported.
 - No tool-approval prompts: pi has no permission system, and tools run without confirmation.
 - `disposeSession` only discards **empty** sessions. A session with history stays listed, and pi session files are never deleted. VS Code currently disposes sessions it is still showing, so treating dispose as delete would lose work.
-- pi extension dialogs (`ctx.ui.confirm` and similar) resolve with their defaults, because there is no UI on the host side.
+- pi extension dialogs resolve with their defaults in `embedded` mode, and in `rpc` mode when they open outside a turn.
 - History is always sent in full; there is no `fetchTurns` paging. Compaction summaries and custom messages are not shown.
 - Changesets, MCP and automations are not implemented. Terminals have no shell-integration command detection.
 
@@ -150,13 +152,13 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 | `initialize` | supported | Negotiates protocol 0.9.x or 1.x. Unsupported versions get `-32005` with `supportedVersions`. |
 | `ping` | supported | Answered at any time, including before `initialize`. |
 | `reconnect` | supported | Replays missed actions from a buffer, or sends fresh snapshots when the gap is too large. A client this host instance never initialized (for example after a host restart) gets `NotFound` (`-32008`), so it runs `initialize` again and picks up the current capabilities. |
-| `subscribe` / `unsubscribe` | supported | Root, session, chat, terminal and resource-watch channels. Subscribing to a saved pi session loads its history. |
+| `subscribe` / `unsubscribe` | supported | Root, session, chat, annotations, terminal and resource-watch channels. Subscribing to a saved pi session loads its history. |
 | `createSession` | supported | Accepts any local working directory. The session id becomes the pi session id. |
 | `disposeSession` | partial | Discards empty sessions only. Sessions with history stay listed, and pi session files are never deleted. |
 | `listSessions` | supported | Live sessions plus pi sessions on disk, newest first, paginated. |
 | `fetchTurns` | stub | History is always sent in full, so there are never older turns to page in. |
 | `resolveSessionConfig` / `sessionConfigCompletions` | stub | No session config options; models and thinking level are chosen per message instead. |
-| `completions` | partial | `/` at the start of a user message completes pi's skills and prompt templates. Other text gets no items. |
+| `completions` | partial | `/` at the start of a user message completes pi's prompt templates, extension commands and skills (in that order, at most 50); later in the message, skills only. Other text gets no items. |
 | `authenticate` | stub | Accepted; pi manages model credentials itself. |
 | `resourceRead` / `resourceList` / `resourceResolve` | supported | Host-local `file:` URIs only. |
 | `resourceWrite` / `resourceCopy` / `resourceDelete` / `resourceMove` / `resourceMkdir` / `resourceRequest` | refused | `PermissionDenied` (`-32009`). |
@@ -171,8 +173,9 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 
 | Channel | Accepted | Rejected |
 |---|---|---|
-| Chat | `chat/turnStarted`, `chat/turnCancelled`, `chat/turnResume` (after a resumable model-server error), `chat/truncated` (not while a pi terminal drives the session), `chat/pendingMessageSet` / `chat/pendingMessageRemoved` (steering and queued messages), `chat/queuedMessagesReordered`, `chat/draftChanged`, `chat/isReadChanged`, `chat/isArchivedChanged` | `chat/toolCallConfirmed` and `chat/toolCallResultConfirmed` (tools never wait for approval), input requests, working-directory changes, client-executed tools |
-| Session | `session/titleChanged` (saved to pi; VS Code's form addressed to the chat is also accepted), `session/isReadChanged`, `session/isArchivedChanged`, `session/activeClientSet` / `session/activeClientRemoved`, `session/configChanged`, `session/workingDirectoryReplaced` (not while a turn runs or a pi terminal drives the session) | `session/workingDirectorySet` / `session/workingDirectoryRemoved`, customization and MCP actions |
+| Chat | `chat/turnStarted`, `chat/turnCancelled`, `chat/turnResume` (after a resumable model-server error), `chat/truncated` (not while a pi terminal drives the session), `chat/pendingMessageSet` / `chat/pendingMessageRemoved` (steering and queued messages), `chat/queuedMessagesReordered`, `chat/draftChanged`, `chat/isReadChanged`, `chat/isArchivedChanged`, `chat/inputAnswerChanged` / `chat/inputCompleted` (for an open extension dialog) | `chat/toolCallConfirmed` and `chat/toolCallResultConfirmed` (tools never wait for approval), answers to input requests that are not open, working-directory changes, client-executed tools |
+| Session | `session/titleChanged` (saved to pi; VS Code's form addressed to a chat renames a forked chat alone, or the session for its default chat), `session/isReadChanged`, `session/isArchivedChanged`, `session/activeClientSet` / `session/activeClientRemoved`, `session/configChanged`, `session/workingDirectoryReplaced` (not while a turn runs or a pi terminal drives the session) | `session/workingDirectorySet` / `session/workingDirectoryRemoved`, customization and MCP actions |
+| Annotations | `annotations/set`, `annotations/updated`, `annotations/removed`, `annotations/entrySet`, `annotations/entryRemoved` | Everything else |
 | Terminal | `terminal/input`, `terminal/resized`, `terminal/claimed`, `terminal/titleChanged`, `terminal/cleared` | Host-only actions such as `terminal/data` |
 | Root | `root/configChanged` (no root config exists, so it has no effect) | Everything else |
 | Resource watch | None | Everything |
@@ -185,11 +188,12 @@ Rejected actions are echoed only to the sending client, with a `rejectionReason`
 |---|---|
 | Root | `root/agentsChanged` (the pi agent and its available models), `root/activeSessionsChanged`, `root/terminalsChanged`; notifications `root/sessionAdded`, `root/sessionRemoved`, `root/sessionSummaryChanged` (also when the background work count in `_meta` changes) |
 | Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatAdded` (forks), `session/chatUpdated`, `session/activityChanged`, `session/customizationsChanged` (pi's skills and prompt templates) |
-| Chat | `chat/turnStarted` (queued messages, and runs started in a pi terminal), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/activityChanged`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/pendingMessageRemoved`, `chat/backgroundWorkSet` / `chat/backgroundWorkRemoved` (`rpc` mode) |
+| Chat | `chat/turnStarted` (queued messages, and runs started in a pi terminal), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/activityChanged`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/inputRequested` / `chat/inputCompleted` (extension dialogs, `rpc` mode), `chat/pendingMessageRemoved`, `chat/backgroundWorkSet` / `chat/backgroundWorkRemoved` (`rpc` mode) |
+| Annotations | `annotations/updated` (marks submitted review comments resolved when their turn completes) |
 | Terminal | `terminal/data`, `terminal/exited` |
 | Resource watch | `resourceWatch/changed` |
 
-Not used: changesets, MCP, annotations, automations, canvases, input requests (elicitation), tool confirmations, terminal command detection, and OTLP telemetry.
+Not used: changesets, MCP, automations, canvases, tool confirmations, terminal command detection, and OTLP telemetry.
 
 ## Design notes
 

@@ -8,7 +8,15 @@ import {
 	type SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import { cached, cachedBy } from "../core/cached.ts";
-import { COMMANDS_TTL_MS, inEmptyDir, type PiAgent, type PiBackend, type PiEvent, type PromptInput } from "./agent.ts";
+import {
+	COMMANDS_TTL_MS,
+	inEmptyDir,
+	type PiAgent,
+	type PiBackend,
+	type PiEvent,
+	type PiQueue,
+	type PromptInput,
+} from "./agent.ts";
 import type { PiModel, ThinkingLevel } from "./models.ts";
 import { moveSessionManager as relocateSessionManager } from "./session-move.ts";
 import { truncationTarget } from "./truncation.ts";
@@ -136,6 +144,11 @@ class EmbeddedAgent implements PiAgent {
 		return continueAfterError(this.#session);
 	}
 
+	/** `agent.continue()` after an assistant reply runs the agent's queued steering messages, then its follow-ups. */
+	async runQueued(): Promise<void> {
+		await this.#session.agent.continue();
+	}
+
 	async truncate(keep: number): Promise<void> {
 		const target = truncationTarget(this.#session.sessionManager.getBranch(), keep);
 		if (!target) return;
@@ -146,6 +159,8 @@ class EmbeddedAgent implements PiAgent {
 	async steer({ text, images }: PromptInput): Promise<void> {
 		await this.#session.steer(text, images, { source: "rpc" });
 	}
+
+	readonly clearQueue = async (): Promise<PiQueue> => this.#session.clearQueue();
 
 	abort(): Promise<void> {
 		return this.#session.abort();

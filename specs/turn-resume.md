@@ -29,6 +29,8 @@ AHP 0.9 lets a host mark a turn error as resumable (`ErrorResponsePart.resumable
 - **Turn continuity:** the reducer reopens the same turn, keeping its message, earlier parts and the error part. The new run uses a `TurnMapper` with an attempt number, so new response part ids are `<turn>.r<n>.<message>.<content>` and never collide with the first attempt's ids. Success ends the turn with `chat/turnComplete`; another provider error appends another resumable error.
 - **Serialization:** resume runs go through the same per-session run queue as prompts, and `chat/turnCancelled` aborts them the same way.
 
+- **Not only for errors:** the same command and `continue()` call also start the steering run (`PiAgent.runQueued()`), which delivers steers pi still holds. There the marker follows a reply that is not an error, so nothing is dropped. The host starts it only after a run that did not end in a resumable error, so `chat/turnResume` stays the only thing that resumes an errored turn. See [steering.md](steering.md).
+
 ## Trade-offs
 
 In embedded mode, calling `agent.continue()` directly skips `AgentSession`'s run loop: auto-retry, automatic compaction, `agent_settled` and the `agent_before_settle` hooks. Messages are still persisted, because `AgentSession` saves agent events through its own subscription. Cancellation still works, because `abort()` always calls `agent.abort()`. See GAPS.md.

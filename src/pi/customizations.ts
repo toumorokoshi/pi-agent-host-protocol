@@ -15,6 +15,7 @@ import {
 	MessageAttachmentKind,
 } from "@microsoft/agent-host-protocol";
 import { fileUri } from "../core/uris.ts";
+import { BRIDGE_COMMAND, RESUME_COMMAND, TRUNCATE_COMMAND } from "./extensions/ahp-resume.ts";
 
 /**
  * Characters that ask the client for `completions`. Skills complete
@@ -26,8 +27,19 @@ export const COMPLETION_TRIGGER_CHARACTERS = ["/"];
 const SKILL_PREFIX = "skill:";
 const SKILL_FILE = "SKILL.md";
 
-/** A command a user can type: a skill (`skill:<name>`) or a prompt template, with its file. */
-export interface UserCommand {
+/**
+ * The most items one `completions` answer returns. VS Code asks again as
+ * the user types, so a longer list only costs transfer and rendering: a
+ * bare `/` in a large repository matched hundreds of skills, and VS Code
+ * showed nothing. Its own agent hosts return 20.
+ */
+export const COMPLETION_LIMIT = 50;
+
+/** pi command names this host's own extensions register, which users do not type. */
+const HOST_COMMANDS: ReadonlySet<string> = new Set([BRIDGE_COMMAND, RESUME_COMMAND, TRUNCATE_COMMAND]);
+
+/** A command backed by a file: a skill (`skill:<name>`) or a prompt template. */
+export interface FileCommand {
 	readonly name: string;
 	readonly description?: string;
 	readonly kind: "skill" | "prompt";
@@ -41,19 +53,37 @@ export interface UserCommand {
 	readonly argumentHint?: string;
 }
 
+/** A command a pi extension registered, such as `/plan`. pi runs it when a message starts with it. */
+export interface ExtensionCommand {
+	readonly name: string;
+	readonly description?: string;
+	readonly kind: "extension";
+}
+
+/** A command a user can type. */
+export type UserCommand = FileCommand | ExtensionCommand;
+
+export function isFileCommand(command: UserCommand): command is FileCommand {
+	return command.kind !== "extension";
+}
+
 /**
- * Skills and prompt templates from pi's command list. Extension commands
- * are left out: they act on pi's own UI rather than starting a turn.
+ * Skills, prompt templates and extension commands from pi's command list.
+ * This host's own commands (`HOST_COMMANDS`) are left out.
  */
 export function userCommands(commands: readonly SlashCommandInfo[]): UserCommand[] {
 	return commands.flatMap((command): UserCommand[] => {
+		const description = command.description ? { description: command.description } : {};
+		if (command.source === "extension") {
+			return HOST_COMMANDS.has(command.name) ? [] : [{ name: command.name, ...description, kind: "extension" }];
+		}
 		if (command.source !== "skill" && command.source !== "prompt") return [];
 		const path = command.sourceInfo?.path;
 		if (!path) return [];
 		return [
 			{
 				name: command.name,
-				...(command.description ? { description: command.description } : {}),
+				...description,
 				kind: command.source,
 				path,
 				...(command.sourceInfo.baseDir ? { baseDir: command.sourceInfo.baseDir } : {}),
@@ -65,11 +95,13 @@ export function userCommands(commands: readonly SlashCommandInfo[]): UserCommand
 /**
  * Adds the frontmatter details pi's command list does not carry: each
  * skill's `disable-model-invocation` flag and every command's
- * `argument-hint`. Unreadable files keep the command unchanged.
+ * `argument-hint`. Unreadable files and extension commands keep the
+ * command unchanged.
  */
 export function withFrontmatter(commands: readonly UserCommand[]): Promise<UserCommand[]> {
 	return Promise.all(
 		commands.map(async (command) => {
+			if (!isFileCommand(command)) return command;
 			try {
 				const { frontmatter } = parseFrontmatter(await readFile(command.path, "utf8"));
 				return withFrontmatterFields(command, frontmatter);
@@ -81,7 +113,7 @@ export function withFrontmatter(commands: readonly UserCommand[]): Promise<UserC
 }
 
 /** The command with the details read from its parsed frontmatter. */
-export function withFrontmatterFields(command: UserCommand, frontmatter: Record<string, unknown>): UserCommand {
+export function withFrontmatterFields(command: FileCommand, frontmatter: Record<string, unknown>): FileCommand {
 	const hint = frontmatter["argument-hint"];
 	return {
 		...command,
@@ -102,14 +134,14 @@ function isWithin(dir: string, path: string): boolean {
  * `<baseDir>/prompts` for pi's standard locations, otherwise the folder
  * holding the skill directory or template file.
  */
-export function containerDir(command: UserCommand): string {
+export function containerDir(command: FileCommand): string {
 	const standard = command.baseDir && join(command.baseDir, command.kind === "skill" ? "skills" : "prompts");
 	if (standard && isWithin(standard, command.path)) return standard;
 	const fileDir = dirname(command.path);
 	return command.kind === "skill" && basename(command.path) === SKILL_FILE ? dirname(fileDir) : fileDir;
 }
 
-function childCustomization(command: UserCommand): ChildCustomization {
+function childCustomization(command: FileCommand): ChildCustomization {
 	const uri = fileUri(command.path);
 	const description = command.description ? { description: command.description } : {};
 	if (command.kind === "prompt")
@@ -127,10 +159,11 @@ function childCustomization(command: UserCommand): ChildCustomization {
 /**
  * One read-only directory customization per discovery folder and kind, in
  * the order pi found them, each listing its skills or prompts by name.
+ * Extension commands have no file, so they are not customizations.
  */
 export function toCustomizations(commands: readonly UserCommand[]): DirectoryCustomization[] {
-	const groups = new Map<string, { dir: string; kind: UserCommand["kind"]; commands: UserCommand[] }>();
-	for (const command of commands) {
+	const groups = new Map<string, { dir: string; kind: FileCommand["kind"]; commands: FileCommand[] }>();
+	for (const command of commands.filter(isFileCommand)) {
 		const dir = containerDir(command);
 		const key = `${command.kind}:${dir}`;
 		const group = groups.get(key) ?? { dir, kind: command.kind, commands: [] };
@@ -159,9 +192,9 @@ function skillName(command: UserCommand): string {
  * VS Code's completion details for a command, in the `_meta` shapes its own
  * agent hosts use: a skill reference (`uri`, `name`, `displayName`,
  * `description`) for skills, and a command (`command`, `description`,
- * `argumentHint`) for prompt templates. VS Code shows the description next
- * to the item, a chip for the accepted reference, and the argument hint as
- * placeholder text.
+ * `argumentHint`) for prompt templates and extension commands. VS Code
+ * shows the description next to the item, a chip for the accepted
+ * reference, and the argument hint as placeholder text.
  */
 export function completionMeta(command: UserCommand): Record<string, unknown> {
 	const description = command.description ? { description: command.description } : {};
@@ -171,8 +204,15 @@ export function completionMeta(command: UserCommand): Record<string, unknown> {
 	return {
 		command: command.name,
 		...description,
-		...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+		...(command.kind === "prompt" && command.argumentHint ? { argumentHint: command.argumentHint } : {}),
 	};
+}
+
+/** Where a command sorts in completions: prompt templates, then extension commands, then skills. */
+const COMPLETION_RANK: Record<UserCommand["kind"], number> = { prompt: 0, extension: 1, skill: 2 };
+
+function byCompletionRank(a: UserCommand, b: UserCommand): number {
+	return COMPLETION_RANK[a.kind] - COMPLETION_RANK[b.kind] || a.name.localeCompare(b.name);
 }
 
 function matches(command: UserCommand, query: string): boolean {
@@ -184,8 +224,10 @@ function matches(command: UserCommand, query: string): boolean {
  * Completions for a `/name` being typed. At the start of a message every
  * command whose name (or skill name without `skill:`) starts with what was
  * typed matches; after whitespace later in the message only skills do,
- * since pi expands prompt templates only at the start. The item replaces
- * the whole word around the cursor. Its attachment carries the command's
+ * since pi expands prompt templates and runs extension commands only at
+ * the start. Matches are ranked by `byCompletionRank` and capped at
+ * `COMPLETION_LIMIT`. The item replaces the whole word around the
+ * cursor. Its attachment carries the command's
  * details for display but no model representation: pi expands a leading
  * `/name` itself, and the host adds skills referenced later in the message
  * when it is sent (`referencedSkills`).
@@ -201,7 +243,8 @@ export function slashCompletions(commands: readonly UserCommand[], text: string,
 	const query = typed.toLowerCase();
 	return commands
 		.filter((command) => (atStart || command.kind === "skill") && matches(command, query))
-		.sort((a, b) => a.name.localeCompare(b.name))
+		.sort(byCompletionRank)
+		.slice(0, COMPLETION_LIMIT)
 		.map((command) => ({
 			insertText: `/${command.name} `,
 			rangeStart,
@@ -228,11 +271,13 @@ function expandedByPi(text: string, command: UserCommand): boolean {
  * files. The skill at the very start of the message is left to pi, and
  * each skill is returned once, in attachment order.
  */
-export function referencedSkills(message: Message, commands: readonly UserCommand[]): UserCommand[] {
+export function referencedSkills(message: Message, commands: readonly UserCommand[]): FileCommand[] {
 	const byUri = new Map(
-		commands.filter((command) => command.kind === "skill").map((command) => [fileUri(command.path), command]),
+		commands
+			.filter((command): command is FileCommand => command.kind === "skill")
+			.map((command) => [fileUri(command.path), command]),
 	);
-	const found = new Map<string, UserCommand>();
+	const found = new Map<string, FileCommand>();
 	for (const attachment of message.attachments ?? []) {
 		if (attachment.type !== MessageAttachmentKind.Simple || attachment.modelRepresentation) continue;
 		const uri = attachment._meta?.uri;
@@ -246,12 +291,12 @@ export function referencedSkills(message: Message, commands: readonly UserComman
  * The skill's contents as the model sees them, in the same block pi builds
  * when it expands `/skill:<name>`.
  */
-export function skillBlock(command: UserCommand, content: string): string {
+export function skillBlock(command: FileCommand, content: string): string {
 	return `<skill name="${skillName(command)}" location="${command.path}">\nReferences are relative to ${dirname(command.path)}.\n\n${stripFrontmatter(content).trim()}\n</skill>`;
 }
 
 /** Reads each skill's block. Unreadable skills are left out. */
-export async function skillBlocks(commands: readonly UserCommand[]): Promise<string[]> {
+export async function skillBlocks(commands: readonly FileCommand[]): Promise<string[]> {
 	const blocks = await Promise.all(
 		commands.map(async (command) => {
 			try {
