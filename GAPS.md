@@ -13,7 +13,7 @@ Known issues and features not yet implemented.
 - **Tool approvals:** tools run without confirmation, because pi has no permission system. Planned: an opt-in `--approve-tools`.
 - **Chats other than forks:** side chats, empty new chats (`createChat` without a source), `moveChat` and `disposeChat` are unsupported. See [Forked chats](#forked-chats).
 - **`disposeSession`** only discards empty sessions, and pi session files are never deleted (see the README).
-- **No paging:** `fetchTurns` does not page, so history is sent in full.
+- **Full-file disk read on open:** `view.turns` and `fetchTurns` page turns over WebSocket (saving transfer and client rendering time), but `SessionManager.open` still reads and parses the full pi session file from disk when loading a session. See [specs/turn-paging.md](specs/turn-paging.md).
 - **History gaps:** compaction summaries, custom messages and bash executions are not shown in reloaded history.
 - **pi extension dialogs** resolve with their defaults in host sessions.
 - **File edits** are shown as text results, not file diffs.

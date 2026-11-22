@@ -136,7 +136,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - No tool-approval prompts: pi has no permission system, and tools run without confirmation.
 - `disposeSession` only discards **empty** sessions. A session with history stays listed, and pi session files are never deleted. VS Code currently disposes sessions it is still showing, so treating dispose as delete would lose work.
 - pi extension dialogs (`ctx.ui.confirm` and similar) resolve with their defaults, because there is no UI on the host side.
-- History is always sent in full; there is no `fetchTurns` paging. Compaction summaries and custom messages are not shown.
+- Compaction summaries and custom messages are not shown. `view.turns` and `fetchTurns` page history over the protocol, though the host still reads the full pi session file from disk when opening a session.
 - Changesets, MCP and automations are not implemented. Terminals have no shell-integration command detection.
 
 ## Supported AHP operations
@@ -154,7 +154,7 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 | `createSession` | supported | Accepts any local working directory. The session id becomes the pi session id. |
 | `disposeSession` | partial | Discards empty sessions only. Sessions with history stay listed, and pi session files are never deleted. |
 | `listSessions` | supported | Live sessions plus pi sessions on disk, newest first, paginated. |
-| `fetchTurns` | stub | History is always sent in full, so there are never older turns to page in. |
+| `fetchTurns` | supported | Pages older turns into state via `chat/turnsLoaded` when `subscribe` used `view.turns`. |
 | `resolveSessionConfig` / `sessionConfigCompletions` | stub | No session config options; models and thinking level are chosen per message instead. |
 | `completions` | partial | `/` at the start of a user message completes pi's skills and prompt templates. Other text gets no items. |
 | `authenticate` | stub | Accepted; pi manages model credentials itself. |
@@ -216,4 +216,4 @@ The tests start a real host on a random port in a temporary directory, with pi's
 
 1. **Host for client-created sessions**: done.
 2. **Live TUI sessions** ([spec](specs/live-tui-sessions.md)): done. A pi extension, loaded into every interactive `pi` process, registers its session with this host over a local socket and starts the host if needed. VS Code and the terminal then share the same conversation in real time, with `/ahp` commands to control it.
-3. **Polish**: optional tool approvals (`--approve-tools`), richer edit rendering (file diffs), `fetchTurns` paging and Dev Tunnels.
+3. **Polish**: optional tool approvals (`--approve-tools`), richer edit rendering (file diffs), and Dev Tunnels.

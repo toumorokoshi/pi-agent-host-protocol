@@ -16,6 +16,7 @@ import {
 	type SessionAction,
 	type SessionState,
 	type Snapshot,
+	type SubscribeView,
 	sessionReducer,
 } from "@microsoft/agent-host-protocol";
 import WebSocket from "ws";
@@ -248,8 +249,8 @@ export class TestClient {
 		return result;
 	}
 
-	async subscribe(channel: string): Promise<Snapshot> {
-		const result = await this.request("subscribe", { channel });
+	async subscribe(channel: string, view?: SubscribeView): Promise<Snapshot> {
+		const result = await this.request("subscribe", view ? { channel, view } : { channel });
 		this.#applySnapshot(result.snapshot);
 		return result.snapshot;
 	}

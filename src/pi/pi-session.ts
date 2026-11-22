@@ -18,12 +18,14 @@ import {
 	SessionStatus,
 	type SessionSummary,
 	type StateAction,
+	type Turn,
 	TurnState,
 } from "@microsoft/agent-host-protocol";
 import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
 import { fileUri, PROVIDER, pathFromFileUri } from "../core/uris.ts";
 import type { ArchiveStore } from "../host/archive-store.ts";
+import { ProtocolError } from "../protocol/jsonrpc.ts";
 import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
 import { backgroundWorkActions, backgroundWorkMeta } from "./background-work.ts";
 import {
@@ -42,6 +44,7 @@ import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
 import { recordedUserTurns } from "./truncation.ts";
 import { TurnMapper, type TurnOutcome } from "./turn-mapper.ts";
+import { parseTurnsCursor, splitTailTurns, takeTurnsPage, turnsCursor } from "./turn-paging.ts";
 
 export interface SessionHostContext {
 	readonly store: StateStore;
@@ -140,6 +143,8 @@ export class PiSession {
 	 */
 	#commands: Promise<readonly UserCommand[]> | undefined;
 	#disposed = false;
+	/** Turns older than the currently loaded window, oldest-first. */
+	#olderTurns: Turn[] = [];
 	#hasTurns: boolean;
 	/** When a client or pi last used the session, for stopping idle pi processes. */
 	#lastActivity: number;
@@ -200,9 +205,18 @@ export class PiSession {
 	 * on the first turn. Its folder's commands are read meanwhile (without an
 	 * agent) and published, so `/` completes before pi starts.
 	 */
-	static open(ctx: SessionHostContext, path: string): PiSession {
+	static open(ctx: SessionHostContext, path: string, tailTurns?: number): PiSession {
 		const manager = ctx.backend.openSessionManager(path);
-		const session = PiSession.#fromHistory(ctx, manager, manager.getBranch(), manager.getSessionName());
+		const session = PiSession.#fromHistory(
+			ctx,
+			manager,
+			manager.getBranch(),
+			manager.getSessionName(),
+			manager.getSessionId(),
+			manager.getCwd(),
+			{ kind: "session" },
+			tailTurns,
+		);
 		session.#loadCommands(ctx.backend.folderCommands(session.cwd));
 		return session;
 	}
@@ -211,7 +225,12 @@ export class PiSession {
 	 * A forked chat's pi session file, published as a chat of its AHP
 	 * session (`session/chatAdded`). The agent starts on the chat's first turn.
 	 */
-	static openFork(ctx: SessionHostContext, path: string, binding: Extract<ChatBinding, { kind: "fork" }>): PiSession {
+	static openFork(
+		ctx: SessionHostContext,
+		path: string,
+		binding: Extract<ChatBinding, { kind: "fork" }>,
+		tailTurns?: number,
+	): PiSession {
 		const manager = ctx.backend.openSessionManager(path);
 		const session = PiSession.#fromHistory(
 			ctx,
@@ -221,6 +240,7 @@ export class PiSession {
 			manager.getSessionId(),
 			manager.getCwd(),
 			binding,
+			tailTurns,
 		);
 		session.#dispatchSession({ type: ActionType.SessionChatAdded, summary: session.#currentChatSummary() });
 		session.#syncCatalog();
@@ -236,6 +256,7 @@ export class PiSession {
 	 * pi process may have appended to it.
 	 */
 	async fork(turnId: string, title: string): Promise<string> {
+		this.loadAllTurns();
 		const chat = this.#ctx.store.chat(this.id);
 		const error = chat ? forkTurnError(chat.turns, turnId) : "Unknown chat";
 		if (error || !chat) throw new Error(error);
@@ -278,6 +299,7 @@ export class PiSession {
 		id = manager.getSessionId(),
 		cwd = manager.getCwd(),
 		binding: ChatBinding = { kind: "session" },
+		tailTurns?: number,
 	): PiSession {
 		const header = manager.getHeader();
 		const createdAt = header?.timestamp ?? new Date().toISOString();
@@ -290,17 +312,76 @@ export class PiSession {
 				? new Date(Date.parse(lastTurn.startedAt) + lastTurn.duration).toISOString()
 				: createdAt;
 		session.#hasTurns = turns.length > 0;
+		const { older, visible, nextCursor } = splitTailTurns(turns, tailTurns);
+		session.#olderTurns = older;
+		const windowProps = nextCursor !== undefined ? { turns: visible, turnsNextCursor: nextCursor } : { turns: visible };
 		if (binding.kind === "fork") {
-			const chat = { ...session.#chatSummary(title, restoredStatus(false), modifiedAt), turns };
+			const chat = { ...session.#chatSummary(title, restoredStatus(false), modifiedAt), ...windowProps };
 			ctx.store.addForkedChat({ kind: "chat", sessionId: binding.session, chatId: id }, binding.chat, chat);
 			return session;
 		}
 		const status = restoredStatus(ctx.archive.isArchived(id));
 		ctx.store.addSession(id, session.#initialSessionState(title, SessionLifecycle.Ready, status), {
 			...session.#chatSummary(title, status, modifiedAt),
-			turns,
+			...windowProps,
 		});
 		return session;
+	}
+
+	get olderTurnsCount(): number {
+		return this.#olderTurns.length;
+	}
+
+	/** Loads all remaining older turns into `StateStore` via `chat/turnsLoaded`. */
+	loadAllTurns(): void {
+		if (this.#olderTurns.length === 0) return;
+		const older = this.#olderTurns;
+		this.#olderTurns = [];
+		this.#ctx.store.dispatch(this.chat, { type: ActionType.ChatTurnsLoaded, turns: older });
+	}
+
+	/**
+	 * Pages older turns into `StateStore` via `chat/turnsLoaded` for `fetchTurns`.
+	 * Rejects unknown or out-of-range cursors with `InvalidParams`.
+	 */
+	fetchTurns(cursor: string | undefined): void {
+		const chat = this.#ctx.store.chat(this.id);
+		if (!chat) return;
+		if (cursor === undefined) {
+			if (this.#olderTurns.length === 0) return;
+			const { page, remaining, nextCursor } = takeTurnsPage(this.#olderTurns);
+			this.#olderTurns = remaining;
+			this.#ctx.store.dispatch(this.chat, {
+				type: ActionType.ChatTurnsLoaded,
+				turns: page,
+				...(nextCursor !== undefined ? { turnsNextCursor: nextCursor } : {}),
+			});
+			return;
+		}
+		const requested = parseTurnsCursor(cursor);
+		const total = this.#olderTurns.length + chat.turns.length;
+		if (requested === undefined || requested > total) {
+			throw ProtocolError.invalidParams(`Invalid fetchTurns cursor: ${cursor}`);
+		}
+		if (requested <= this.#olderTurns.length) {
+			const { page, remaining, nextCursor } = takeTurnsPage(this.#olderTurns);
+			this.#olderTurns = remaining;
+			this.#ctx.store.dispatch(this.chat, {
+				type: ActionType.ChatTurnsLoaded,
+				turns: page,
+				...(nextCursor !== undefined ? { turnsNextCursor: nextCursor } : {}),
+			});
+			return;
+		}
+		// Client holds a trimmed snapshot whose cursor points inside `chat.turns`.
+		const alreadyLoaded = requested - this.#olderTurns.length;
+		const page = chat.turns.slice(0, alreadyLoaded);
+		const nextCursor = turnsCursor(this.#olderTurns.length);
+		this.#ctx.store.dispatch(this.chat, {
+			type: ActionType.ChatTurnsLoaded,
+			turns: page,
+			...(nextCursor !== undefined ? { turnsNextCursor: nextCursor } : {}),
+		});
 	}
 
 	get hasTurns(): boolean {
@@ -441,6 +522,7 @@ export class PiSession {
 				this.#consumePending();
 				break;
 			case ActionType.ChatTruncated:
+				if (action.turnId === undefined) this.#olderTurns = [];
 				this.#truncate();
 				break;
 			case ActionType.ChatIsArchivedChanged:

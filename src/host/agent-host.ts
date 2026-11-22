@@ -6,6 +6,7 @@ import {
 	AhpErrorCodes,
 	type ChatAction,
 	ChatOriginKind,
+	type ChatState,
 	CompletionItemKind,
 	type CompletionsResult,
 	type DirectoryCustomization,
@@ -57,6 +58,7 @@ import {
 } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
+import { parseTurnsCursor, trimChatSnapshot } from "../pi/turn-paging.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
 import { type ArchiveStore, memoryArchiveStore } from "./archive-store.ts";
@@ -141,6 +143,8 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	readonly #sessions = new Map<string, PiSession>();
 	/** Forked chats, by the id of the pi session backing each one. */
 	readonly #forkedChats = new Map<string, PiSession>();
+	/** Chats for which at least one subscriber received a trimmed `view.turns` snapshot. */
+	readonly #trimmedChats = new Set<string>();
 	/** Negotiated protocol version per clientId, for `reconnect`. */
 	readonly #clientVersions = new Map<string, string>();
 	readonly #resources = new ResourceService();
@@ -419,8 +423,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			case "listSessions":
 				return this.#listSessions(params);
 			case "fetchTurns":
-				// History is always delivered in full; there are never older turns to page in.
-				return {};
+				return this.#fetchTurns(params);
 			case "resolveSessionConfig":
 				return { schema: { type: "object", properties: {} }, values: {} };
 			case "sessionConfigCompletions":
@@ -549,18 +552,29 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 
 	async #subscribe(connection: Connection, params: Record<string, unknown>, reply: Reply): Promise<typeof RESPONDED> {
 		const channel = requireString(params.channel, "channel");
-		await this.#load(channel);
+		const viewTurns = subscribeViewTurns(params.view);
+		await this.#load(channel, viewTurns);
+		const ref = this.store.ref(channel);
+		const chatSession = ref.kind === "chat" ? this.#chat(ref) : undefined;
+		if (viewTurns === undefined) chatSession?.loadAllTurns();
 		const snapshot = this.store.snapshot(channel);
 		if (!snapshot) throw ProtocolError.notFound(channel);
 		connection.subscribe(snapshot.resource, channel);
 		this.#watches.subscribed(snapshot.resource);
-		return reply({ snapshot: { ...snapshot, resource: channel } });
+		const state =
+			viewTurns !== undefined && ref.kind === "chat"
+				? trimChatSnapshot(snapshot.state as ChatState, viewTurns, chatSession?.olderTurnsCount ?? 0)
+				: snapshot.state;
+		if (state !== snapshot.state && ref.kind === "chat") this.#trimmedChats.add(ref.chatId);
+		return reply({ snapshot: { ...snapshot, resource: channel, state } });
 	}
 
 	/** Subscribes to every resolvable channel and returns their snapshots, synchronously. */
 	#subscribeAll(connection: Connection, channels: string[]): Snapshot[] {
 		const snapshots: Snapshot[] = [];
 		for (const channel of channels) {
+			const ref = this.store.ref(channel);
+			if (ref.kind === "chat") this.#chat(ref)?.loadAllTurns();
 			const snapshot = this.store.snapshot(channel);
 			if (!snapshot) continue;
 			connection.subscribe(snapshot.resource, channel);
@@ -570,10 +584,36 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		return snapshots;
 	}
 
+	async #fetchTurns(params: Record<string, unknown>): Promise<Record<string, never>> {
+		const channel = requireString(params.channel, "channel");
+		const cursor = params.cursor === undefined ? undefined : requireString(params.cursor, "cursor");
+		await this.#load(channel);
+		const ref = this.store.ref(channel);
+		if (ref.kind !== "chat") throw ProtocolError.invalidParams(`Not a chat channel: ${channel}`);
+		const session = this.#chat(ref);
+		if (session) {
+			session.fetchTurns(cursor);
+			return {};
+		}
+		const chat = this.store.chat(ref.chatId);
+		if (!chat) throw ProtocolError.notFound(channel);
+		if (cursor !== undefined) {
+			const requested = parseTurnsCursor(cursor);
+			if (requested === undefined || requested > chat.turns.length) {
+				throw ProtocolError.invalidParams(`Invalid fetchTurns cursor: ${cursor}`);
+			}
+			this.store.dispatch(channel, {
+				type: ActionType.ChatTurnsLoaded,
+				turns: chat.turns.slice(0, requested),
+			});
+		}
+		return {};
+	}
+
 	// ── Sessions ──────────────────────────────────────────────────────────
 
 	/** Ensures the session addressed by a session or chat URI is loaded, with its forked chats. */
-	async #load(channel: string): Promise<void> {
+	async #load(channel: string, tailTurns?: number): Promise<void> {
 		if (this.store.channel(channel)) return;
 		const ref = this.store.ref(channel);
 		if (ref.kind === "root") return;
@@ -584,13 +624,16 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		const info = (await this.#catalogSessions()).find((session) => session.id === sessionId);
 		if (!info) throw ProtocolError.sessionNotFound(channel);
 		if (this.#sessions.has(sessionId)) return;
-		this.#sessions.set(sessionId, PiSession.open(this, info.path));
+		this.#sessions.set(
+			sessionId,
+			PiSession.open(this, info.path, ref.kind === "chat" && ref.chatId === sessionId ? tailTurns : undefined),
+		);
 		this.logger.debug("session loaded", { session: sessionId, path: info.path });
-		await this.#loadForks(sessionId);
+		await this.#loadForks(sessionId, channel, tailTurns);
 	}
 
 	/** Loads the forked chats of a loaded session. Forks whose pi session file is gone are skipped. */
-	async #loadForks(sessionId: string): Promise<void> {
+	async #loadForks(sessionId: string, targetChannel?: string, tailTurns?: number): Promise<void> {
 		const forks = forksOf(this.forks.all(), sessionId);
 		if (forks.length === 0) return;
 		const catalog = await this.#catalogSessions();
@@ -601,7 +644,10 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				this.logger.warn("forked chat's session file not found", { session: sessionId, chat: record.chat, fork: id });
 				continue;
 			}
-			this.#forkedChats.set(id, PiSession.openFork(this, info.path, forkBinding(record)));
+			this.#forkedChats.set(
+				id,
+				PiSession.openFork(this, info.path, forkBinding(record), record.chat === targetChannel ? tailTurns : undefined),
+			);
 			this.logger.debug("forked chat loaded", { session: sessionId, chat: record.chat, fork: id });
 		}
 	}
@@ -859,6 +905,15 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			case "chat": {
 				const session = this.#chat(ref);
 				if (!session) return { kind: "ignored" };
+				if (action.type === ActionType.ChatTruncated && action.turnId !== undefined && !session.isTuiAttached) {
+					session.loadAllTurns();
+					if (this.#trimmedChats.delete(ref.chatId)) {
+						const chat = this.store.chat(ref.chatId);
+						if (chat && chat.turns.length > 0) {
+							this.store.dispatch(channel, { type: ActionType.ChatTurnsLoaded, turns: chat.turns });
+						}
+					}
+				}
 				const reason = session.validateChatAction(action);
 				if (reason) return { kind: "rejected", reason };
 				if (this.store.dispatch(channel, action, origin)) session.onChatAction(action as ChatAction);
@@ -1001,6 +1056,17 @@ function globList(value: unknown): { items: string[] } | undefined {
 
 function positiveInt(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function subscribeViewTurns(view: unknown): number | undefined {
+	if (view === undefined || view === null) return undefined;
+	if (typeof view !== "object") throw ProtocolError.invalidParams("view must be an object");
+	const turns = (view as { turns?: unknown }).turns;
+	if (turns === undefined || turns === null) return undefined;
+	if (typeof turns !== "number" || !Number.isInteger(turns) || turns < 0) {
+		throw ProtocolError.invalidParams("view.turns must be a non-negative integer");
+	}
+	return turns;
 }
 
 function requireString(value: unknown, name: string): string {
