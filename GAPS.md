@@ -44,7 +44,7 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
   - `startedAt` is when the host first saw the process, up to 5 s late, or when the turn that started it ended.
   - Nothing is reported for embedded sessions or pi terminals: their children are the host's or the terminal's own.
   - Each refresh runs `ps` once per running pi, every 5 s and at each turn start and end.
-- **Model list:** see [specs/models.md](specs/models.md). Models added in pi appear within 10 minutes (the periodic relisting), or at the next connect after the 30 s cache. A listing that fails after a success keeps showing the old models. A listing that hangs is given up on after 30 s, but its short-lived `pi` child is not killed.
+- **Model list:** see [specs/models.md](specs/models.md). Models added in pi appear within 10 minutes (the periodic relisting), or at the next connect after the 30 s cache. A listing that fails after a success keeps showing the old models.
 - **Session title of a running rpc session** is read from the session file only when the session is loaded. A rename made inside pi (for example by an extension) is not reflected until the host reloads the session.
 - **Agent directory not detected (rpc):** the host does not ask the `pi` executable which agent directory it uses. If the installed `pi` defaults to a different directory than `~/.pi/agent` (for example a build with `userConfigDir: ".av-pi"`), pass `--agent-dir`, or saved sessions vanish from the list after a restart.
 - **Version skew (rpc):** the host is tested against the pi bundled in `node_modules`. An installed `pi` with a different RPC protocol version is not detected.

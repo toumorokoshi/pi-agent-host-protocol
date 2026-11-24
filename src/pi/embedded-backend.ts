@@ -53,7 +53,7 @@ export class EmbeddedBackend implements PiBackend {
 		return new EmbeddedBackend(options, options.modelRuntime ?? (await ModelRuntime.create()));
 	}
 
-	async models(): Promise<readonly PiModel[]> {
+	async models(_signal?: AbortSignal): Promise<readonly PiModel[]> {
 		return this.#modelRuntime.getAvailable();
 	}
 

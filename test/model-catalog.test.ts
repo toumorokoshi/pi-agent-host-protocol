@@ -73,10 +73,10 @@ function scripted(results: (readonly PiModel[] | Error)[]) {
 }
 
 describe("model catalog", () => {
-	test("retry delays back off to 30 s", () => {
+	test("retry delays back off up to 10 minutes", () => {
 		assert.deepEqual(
-			[1, 2, 3, 4, 5, 6, 20].map((attempt) => retryDelay(attempt)),
-			[2000, 4000, 8000, 16000, 30000, 30000, 30000],
+			[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20].map((attempt) => retryDelay(attempt)),
+			[2000, 4000, 8000, 16000, 30000, 60000, 120000, 300000, 600000, 600000, 600000],
 		);
 	});
 
@@ -89,10 +89,42 @@ describe("model catalog", () => {
 		assert.equal(failed.kind, "failed");
 	});
 
-	test("listModels counts a listing that never finishes as failed", async () => {
-		const listing = await listModels(() => new Promise(() => {}), 10);
+	test("listModels counts a listing that never finishes as failed and aborts its signal", async () => {
+		let aborted = false;
+		const listing = await listModels(
+			(signal) =>
+				new Promise(() => {
+					signal.addEventListener("abort", () => {
+						aborted = true;
+					});
+				}),
+			10,
+		);
 		assert.equal(listing.kind, "failed");
 		assert.match((listing as { error: Error }).error.message, /timed out after 10 ms/);
+		assert.equal(aborted, true);
+	});
+
+	test("ModelCatalog.dispose aborts an in-flight listing", async () => {
+		const clock = fakeTimers();
+		const { logger } = recordingLogger();
+		let aborted = false;
+		const catalog = new ModelCatalog({
+			load: (signal) =>
+				new Promise(() => {
+					signal.addEventListener("abort", () => {
+						aborted = true;
+					});
+				}),
+			publish: () => {},
+			logger,
+			timers: clock.timers,
+		});
+		const pending = catalog.refresh();
+		catalog.dispose();
+		const listing = await pending;
+		assert.equal(listing.kind, "failed");
+		assert.equal(aborted, true);
 	});
 
 	test("a hung listing is logged as failed, clears the in-flight listing, and the retry succeeds", async () => {
@@ -264,6 +296,50 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 			assert.equal(Number(await readFile(join(dir, "count"), "utf8")), 2);
 			assert.equal((await catalog.refresh()).kind, "models");
 			assert.equal(Number(await readFile(join(dir, "count"), "utf8")), 2, "a real list is cached");
+		} finally {
+			catalog.dispose();
+			await backend.dispose();
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a hung rpc model listing kills the pi child and its subprocesses at the deadline", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-agent-host-protocol-models-hang-"));
+		const script = join(dir, "pi.mjs");
+		const pidFile = join(dir, "pids");
+		await writeFile(
+			script,
+			`import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+setInterval(() => {}, 1000);
+`,
+		);
+		const { logger } = recordingLogger();
+		const backend = new RpcBackend({ pi: script, logger: silentLogger });
+		const catalog = new ModelCatalog({
+			load: (signal) => backend.models(signal),
+			publish: () => {},
+			logger,
+			listTimeoutMs: 1_500,
+			retryDelays: [60_000],
+		});
+		const alive = (pid: number) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+		try {
+			const listing = await catalog.refresh();
+			assert.equal(listing.kind, "failed");
+			const pids = JSON.parse(await readFile(pidFile, "utf8")) as { child: number; grandchild: number };
+			await waitUntil(() => !alive(pids.child) && !alive(pids.grandchild), 5_000);
+			assert.equal(alive(pids.child), false, "hung pi child was killed");
+			assert.equal(alive(pids.grandchild), false, "grandchild process was killed");
 		} finally {
 			catalog.dispose();
 			await backend.dispose();

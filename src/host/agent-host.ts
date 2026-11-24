@@ -235,7 +235,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			(sessionId) => this.schemes.schemeOf(sessionId),
 		);
 		this.#modelCatalog = new ModelCatalog({
-			load: () => this.backend.models(),
+			load: (signal) => this.backend.models(signal),
 			publish: (models) => {
 				this.#updateAgent({ models: models.map(toSessionModelInfo) });
 				// The gauge's window comes from the model list, which can arrive after sessions load.

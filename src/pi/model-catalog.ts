@@ -8,8 +8,10 @@
 import type { Logger } from "../core/logger.ts";
 import type { PiModel } from "./models.ts";
 
-/** Delays between listings while the published list is empty: 2, 4, 8, 16 s, then every 30 s. */
-export const EMPTY_RETRY_DELAYS_MS: readonly number[] = [2_000, 4_000, 8_000, 16_000, 30_000];
+/** Delays between listings while the published list is empty: 2 s up to 10 minutes. */
+export const EMPTY_RETRY_DELAYS_MS: readonly number[] = [
+	2_000, 4_000, 8_000, 16_000, 30_000, 60_000, 120_000, 300_000, 600_000,
+];
 
 /** How often the host relists models once it has some. */
 export const MODEL_REFRESH_INTERVAL_MS = 10 * 60_000;
@@ -44,29 +46,49 @@ const realTimers: CatalogTimers = {
 /** How long one listing may take before it counts as failed (a hung credential helper). */
 export const LIST_TIMEOUT_MS = 30_000;
 
-/** Lists models once, giving up after `timeoutMs`, and classifies the result; never throws. */
+/**
+ * Lists models once, giving up after `timeoutMs`, and classifies the result; never throws.
+ * Aborts the signal passed to `load` on timeout or when `outerSignal` aborts.
+ */
 export async function listModels(
-	load: () => Promise<readonly PiModel[]>,
+	load: (signal: AbortSignal) => Promise<readonly PiModel[]>,
 	timeoutMs = LIST_TIMEOUT_MS,
 	timers: CatalogTimers = realTimers,
+	outerSignal?: AbortSignal,
 ): Promise<ModelListing> {
+	const controller = new AbortController();
 	let timer: unknown;
-	const timedOut = new Promise<never>((_, reject) => {
-		timer = timers.setTimeout(() => reject(new Error(`listing models timed out after ${timeoutMs} ms`)), timeoutMs);
+	let onOuterAbort: (() => void) | undefined;
+	const cancelled = new Promise<never>((_, reject) => {
+		onOuterAbort = () => {
+			const reason = outerSignal?.reason instanceof Error ? outerSignal.reason : new Error("Model listing aborted");
+			controller.abort(reason);
+			reject(reason);
+		};
+		if (outerSignal) {
+			if (outerSignal.aborted) onOuterAbort();
+			else outerSignal.addEventListener("abort", onOuterAbort, { once: true });
+		}
+		timer = timers.setTimeout(() => {
+			const error = new Error(`listing models timed out after ${timeoutMs} ms`);
+			controller.abort(error);
+			reject(error);
+		}, timeoutMs);
 	});
 	try {
-		const models = await Promise.race([load(), timedOut]);
+		const models = await Promise.race([load(controller.signal), cancelled]);
 		return models.length > 0 ? { kind: "models", models } : { kind: "empty" };
 	} catch (error) {
 		return { kind: "failed", error };
 	} finally {
 		timers.clearTimeout(timer);
+		if (onOuterAbort) outerSignal?.removeEventListener("abort", onOuterAbort);
 	}
 }
 
 export interface ModelCatalogOptions {
 	/** Lists pi's models (the backend's `models()`). */
-	load: () => Promise<readonly PiModel[]>;
+	load: (signal: AbortSignal) => Promise<readonly PiModel[]>;
 	/** Called with each non-empty list; the host publishes it only when it differs from root state. */
 	publish: (models: readonly PiModel[]) => void;
 	logger: Logger;
@@ -84,6 +106,7 @@ export interface ModelCatalogOptions {
 export class ModelCatalog {
 	readonly #options: ModelCatalogOptions;
 	readonly #timers: CatalogTimers;
+	readonly #disposeController = new AbortController();
 	#models: readonly PiModel[] = [];
 	#failures = 0;
 	#timer: unknown;
@@ -111,14 +134,20 @@ export class ModelCatalog {
 		return this.#inFlight;
 	}
 
-	/** Stops scheduled listings. */
+	/** Stops scheduled listings and aborts any in-flight listing. */
 	dispose(): void {
 		this.#disposed = true;
+		this.#disposeController.abort(new Error("ModelCatalog disposed"));
 		this.#clearTimer();
 	}
 
 	async #run(): Promise<ModelListing> {
-		const listing = await listModels(this.#options.load, this.#options.listTimeoutMs, this.#timers);
+		const listing = await listModels(
+			this.#options.load,
+			this.#options.listTimeoutMs,
+			this.#timers,
+			this.#disposeController.signal,
+		);
 		if (this.#disposed) return listing;
 		if (listing.kind === "models") this.#accept(listing.models);
 		else this.#reject(listing);

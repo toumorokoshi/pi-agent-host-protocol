@@ -43,8 +43,9 @@ export class RpcBackend implements PiBackend {
 	readonly #options: RpcBackendOptions;
 	readonly #logger: Logger;
 	readonly #agents = new Set<RpcAgent>();
-	/** Lists models through a short-lived child, cached briefly because clients ask on every `initialize`. */
-	readonly models: () => Promise<readonly PiModel[]>;
+	readonly #modelsCache: () => Promise<readonly PiModel[]>;
+	#modelFetchAbort: AbortController | undefined;
+	readonly #closingModelChildren = new Set<Promise<void>>();
 	/** Lists commands through a short-lived child in an empty folder. */
 	readonly globalCommands: () => Promise<readonly SlashCommandInfo[]>;
 	/** Lists commands through a short-lived child in the folder, without a session. */
@@ -54,14 +55,32 @@ export class RpcBackend implements PiBackend {
 		this.#options = options;
 		this.#logger = options.logger ?? silentLogger;
 		// An empty answer (a slow first start) is returned, so `ModelCatalog` sees it, but not kept for the ttl.
-		this.models = cached(
+		this.#modelsCache = cached(
 			MODELS_TTL_MS,
-			() => this.#fetchModels(),
+			() => {
+				const controller = new AbortController();
+				this.#modelFetchAbort = controller;
+				return this.#fetchModels(controller.signal).finally(() => {
+					if (this.#modelFetchAbort === controller) this.#modelFetchAbort = undefined;
+				});
+			},
 			Date.now,
 			(models) => models.length > 0,
 		);
 		this.globalCommands = cached(COMMANDS_TTL_MS, () => inEmptyDir((cwd) => this.#fetchCommands(cwd)));
 		this.folderCommands = cachedBy(COMMANDS_TTL_MS, (cwd: string) => this.#fetchCommands(cwd));
+	}
+
+	/** Lists models through a short-lived child, cached briefly because clients ask on every `initialize`. */
+	models(signal?: AbortSignal): Promise<readonly PiModel[]> {
+		if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
+		const onAbort = () => {
+			this.#modelFetchAbort?.abort(signal?.reason);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		return this.#modelsCache().finally(() => {
+			signal?.removeEventListener("abort", onAbort);
+		});
 	}
 
 	listSessions(): Promise<SessionInfo[]> {
@@ -126,16 +145,32 @@ export class RpcBackend implements PiBackend {
 	}
 
 	async dispose(): Promise<void> {
-		await Promise.all([...this.#agents].map((agent) => agent.dispose()));
+		this.#modelFetchAbort?.abort(new Error("Backend disposed"));
+		await Promise.all([...[...this.#agents].map((agent) => agent.dispose()), ...this.#closingModelChildren]);
 	}
 
-	async #fetchModels(): Promise<PiModel[]> {
+	async #fetchModels(signal: AbortSignal): Promise<PiModel[]> {
 		const { channel: child } = this.#spawn(this.#options.cwd ?? process.cwd(), ["--no-session"], { purpose: "models" });
+		let closing: Promise<void> | undefined;
+		const closeChild = () => {
+			if (!closing) {
+				closing = child.close().finally(() => {
+					this.#closingModelChildren.delete(closing!);
+				});
+				this.#closingModelChildren.add(closing);
+			}
+			return closing;
+		};
+		const onAbort = () => {
+			void closeChild();
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
 		try {
 			const { models } = await child.request<{ models: PiModel[] }>({ type: "get_available_models" });
 			return models;
 		} finally {
-			await child.close();
+			signal.removeEventListener("abort", onAbort);
+			await closeChild();
 		}
 	}
 

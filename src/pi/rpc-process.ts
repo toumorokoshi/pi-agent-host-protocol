@@ -46,7 +46,19 @@ export function spawnRpcProcess(options: RpcProcessOptions): RpcProcess {
 		cwd: options.cwd,
 		env: { ...process.env, ...options.env },
 		stdio: ["pipe", "pipe", "pipe"],
+		detached: process.platform !== "win32",
 	});
+	const kill = (signal: NodeJS.Signals): void => {
+		if (process.platform !== "win32" && child.pid !== undefined) {
+			try {
+				process.kill(-child.pid, signal);
+				return;
+			} catch {
+				// Process group may already be gone; fall back to killing the child directly.
+			}
+		}
+		child.kill(signal);
+	};
 	let stderr = "";
 	const channel = new JsonlChannel(
 		{
@@ -57,7 +69,7 @@ export function spawnRpcProcess(options: RpcProcessOptions): RpcProcess {
 				for (const signal of ["SIGTERM", "SIGKILL"] as const) {
 					const done = await Promise.race([exited.then(() => true), delay(STOP_GRACE_MS).then(() => false)]);
 					if (done) return;
-					child.kill(signal);
+					kill(signal);
 				}
 				await exited;
 			},

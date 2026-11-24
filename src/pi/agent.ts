@@ -136,8 +136,8 @@ export interface PiAgent {
 /** Creates agents and reads pi's session store for one host. */
 export interface PiBackend {
 	readonly mode: PiMode;
-	/** Models pi can use right now. */
-	models(): Promise<readonly PiModel[]>;
+	/** Models pi can use right now. Aborting `signal` cancels an in-flight listing. */
+	models(signal?: AbortSignal): Promise<readonly PiModel[]>;
 	/** Sessions in pi's session store, read from disk (no agent is started). */
 	listSessions(): Promise<SessionInfo[]>;
 	/** A not-yet-persisted session with the given id. */
